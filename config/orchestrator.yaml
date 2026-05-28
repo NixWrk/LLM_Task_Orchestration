@@ -1,0 +1,38 @@
+defaults:
+  max_active_requests: 1
+  max_queued_requests: 16
+  queue_timeout_seconds: 30
+  default_max_output_tokens: 512
+  max_input_tokens: 8192
+  max_output_tokens: 1024
+  max_total_tokens: 9216
+  token_estimate_chars_per_token: 4
+  output_over_limit_behavior: clamp
+
+gpus:
+  - id: gpu0
+    name: auto
+    memory_gb: null
+  - id: gpu1
+    name: auto
+    memory_gb: null
+
+models:
+  local-main:
+    public_name: local-main
+    backend_model: local-main
+    aliases:
+      - local-main
+    max_active_requests: 1
+    max_queued_requests: 16
+    queue_timeout_seconds: 30
+    default_max_output_tokens: 512
+    max_input_tokens: 8192
+    max_output_tokens: 1024
+    max_total_tokens: 9216
+    lifecycle:
+      min_replicas: 1
+      max_replicas: 1
+      idle_ttl_seconds: 3600
+      preferred_gpus:
+        - auto

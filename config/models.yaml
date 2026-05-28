@@ -1,0 +1,9 @@
+models:
+  primary:
+    public_name: local-main
+    lmstudio_id: local-main
+    litellm_model: openai/local-main
+    preload: true
+    warmup: true
+    ttl_seconds: 3600
+    max_context_tokens: 8192

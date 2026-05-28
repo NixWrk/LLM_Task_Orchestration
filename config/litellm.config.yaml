@@ -1,0 +1,19 @@
+model_list:
+  - model_name: local-main
+    litellm_params:
+      model: os.environ/LITELLM_MODEL
+      api_base: os.environ/LMSTUDIO_OPENAI_BASE_URL
+      api_key: os.environ/LMSTUDIO_API_KEY
+      timeout: 120
+      supports_system_message: true
+
+litellm_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  drop_params: false
+  set_verbose: false
+
+router_settings:
+  routing_strategy: simple-shuffle
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT

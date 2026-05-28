@@ -1,0 +1,16 @@
+gateway:
+  public_model_name: local-main
+  litellm_base_url: http://litellm:4000
+  lmstudio_openai_base_url: http://host.docker.internal:1234/v1
+  request_timeout_seconds: 120
+
+concurrency:
+  default_max_active_requests: 1
+  default_max_queued_requests: 16
+  queue_timeout_seconds: 30
+  reject_status_code: 429
+
+observability:
+  enable_prompt_logging: false
+  enable_prometheus: true
+  log_level: INFO
