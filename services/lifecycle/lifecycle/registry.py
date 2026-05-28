@@ -58,6 +58,17 @@ class BackendRegistry:
                 reserved[gpu_id] = reserved.get(gpu_id, 0) + instance.reserved_vram_mb
         return reserved
 
+    def next_host_port(self, model: str, host_port_start: int) -> int:
+        used_ports = {
+            instance.host_port
+            for instance in self._instances.values()
+            if instance.host_port is not None
+        }
+        offset = 0
+        while host_port_start + offset in used_ports:
+            offset += 1
+        return host_port_start + offset
+
     def upsert(self, instance: BackendInstance) -> None:
         instance.updated_at = now_iso()
         self._instances[instance.instance_id] = instance

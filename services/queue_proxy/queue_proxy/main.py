@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from queue_proxy.backend_registry import BackendRegistryClient
 from queue_proxy.limiter import LimiterRegistry, QueueFull, QueueTimeout
 from queue_proxy.metrics import (
     CONTENT_TYPE_LATEST,
@@ -71,6 +72,11 @@ logger = logging.getLogger(__name__)
 
 policy_registry: PolicyRegistry = load_policy_registry(settings.config_path)
 limiter_registry = LimiterRegistry()
+backend_registry_client = (
+    BackendRegistryClient(settings.backend_registry_url, settings.request_timeout_seconds)
+    if settings.backend_registry_url
+    else None
+)
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 
 
@@ -85,6 +91,8 @@ async def ready() -> dict[str, Any]:
         "service": settings.service_name,
         "status": "healthy",
         "upstream_base_url": settings.upstream_base_url,
+        "backend_registry_url": settings.backend_registry_url,
+        "backend_registry_routing": settings.enable_backend_registry_routing,
         "models": sorted(policy_registry.policies.keys()),
     }
 
@@ -150,6 +158,17 @@ async def forward_openai_path(path: str, request: Request) -> Response:
     record_limiter_snapshot(limiter)
 
     try:
+        upstream_base_url = await resolve_upstream_base_url(policy.public_name)
+        if upstream_base_url is None:
+            await limiter.release()
+            record_limiter_snapshot(limiter)
+            ERRORS.labels(model=policy.public_name, error_type="no_ready_backend").inc()
+            return error_response(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "no_ready_backend",
+                "No ready backend instance is available for this model.",
+            )
+
         clean_payload = strip_internal_fields(payload)
         clean_body = json.dumps(clean_payload, separators=(",", ":")).encode("utf-8")
         response = await stream_upstream_response(
@@ -160,6 +179,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             endpoint=endpoint,
             limiter=limiter,
             started_at=started_at,
+            upstream_base_url=upstream_base_url,
         )
 
         if policy_metadata:
@@ -245,7 +265,7 @@ async def forward_without_limiter(path: str, request: Request, body: bytes) -> R
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             upstream_response = await client.request(
                 request.method,
-                upstream_url(path),
+                upstream_url(settings.upstream_base_url, path),
                 headers=upstream_headers(request),
                 content=body,
                 params=request.query_params,
@@ -273,11 +293,12 @@ async def stream_upstream_response(
     endpoint: str,
     limiter: Any,
     started_at: float,
+    upstream_base_url: str,
 ) -> StreamingResponse:
     client = httpx.AsyncClient(timeout=settings.request_timeout_seconds)
     upstream_request = client.build_request(
         request.method,
-        upstream_url(path),
+        upstream_url(upstream_base_url, path),
         headers=upstream_headers(request),
         content=body,
         params=request.query_params,
@@ -310,8 +331,28 @@ async def stream_upstream_response(
     )
 
 
-def upstream_url(path: str) -> str:
-    return f"{settings.upstream_base_url.rstrip('/')}/v1/{path.lstrip('/')}"
+async def resolve_upstream_base_url(model: str) -> str | None:
+    if not settings.enable_backend_registry_routing or backend_registry_client is None:
+        return settings.upstream_base_url
+
+    try:
+        backend = await backend_registry_client.choose_backend(model)
+    except httpx.HTTPError as exc:
+        logger.warning("backend_registry_lookup_failed error_type=%s", type(exc).__name__)
+        if settings.require_backend_registry_backend:
+            return None
+        return settings.upstream_base_url
+
+    if backend is None:
+        if settings.require_backend_registry_backend:
+            return None
+        return settings.upstream_base_url
+
+    return backend.base_url
+
+
+def upstream_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/v1/{path.lstrip('/')}"
 
 
 def upstream_headers(request: Request) -> dict[str, str]:

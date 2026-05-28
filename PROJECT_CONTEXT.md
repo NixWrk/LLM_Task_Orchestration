@@ -72,6 +72,7 @@ Responsibilities:
 - limit queued requests per model;
 - return `429` for queue overflow or queue timeout;
 - expose queue and active request metrics.
+- optionally route requests to ready backend instances from the lifecycle registry.
 
 ### LiteLLM Proxy
 
@@ -121,6 +122,8 @@ Responsibilities:
 - expose desired and actual model state.
 
 The first implementation is dry-run: it creates planned backend instances in the registry but does not launch real runtime processes yet.
+
+The next adapter layer can generate Docker vLLM launch commands. Real launch is opt-in with dry-run disabled.
 
 ### GPU Inventory
 

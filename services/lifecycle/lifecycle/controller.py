@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict
 from typing import Any
 
 import httpx
 
+from lifecycle.adapters import adapter_for
 from lifecycle.config import load_model_profiles
 from lifecycle.models import BackendInstance, GpuState, ModelProfile, PlacementDecision, now_iso
 from lifecycle.registry import BackendRegistry
@@ -20,12 +20,14 @@ class LifecycleController:
         gpu_inventory_url: str,
         request_timeout_seconds: float,
         dry_run: bool,
+        docker_binary: str = "docker",
     ) -> None:
         self.config_path = config_path
         self.registry = registry
         self.gpu_inventory_url = gpu_inventory_url.rstrip("/")
         self.request_timeout_seconds = request_timeout_seconds
         self.dry_run = dry_run
+        self.docker_binary = docker_binary
 
     def profiles(self) -> dict[str, ModelProfile]:
         return load_model_profiles(self.config_path)
@@ -61,7 +63,9 @@ class LifecycleController:
                 ready_count,
                 queue_lengths.get(profile.public_name, 0),
             )
-            missing = max(0, desired_count - active_count)
+            # Scale one replica per reconcile cycle so placement can account for each
+            # newly reserved backend before making the next decision.
+            missing = 1 if desired_count > active_count else 0
 
             decisions: list[PlacementDecision] = []
             for _ in range(missing):
@@ -101,34 +105,42 @@ class LifecycleController:
 
         for model_plan in plan["models"]:
             profile = profiles[model_plan["model"]]
+            gpus = {gpu.id: gpu for gpu in await self.gpu_states()}
             for decision_payload in model_plan["decisions"]:
                 if decision_payload["action"] != "start" or not decision_payload["gpu_id"]:
                     continue
-                instance = self.create_dry_run_instance(profile, decision_payload)
+                instance = self.start_instance(profile, decision_payload, gpus)
                 self.registry.upsert(instance)
                 created.append(instance.to_dict())
 
         plan["created_instances"] = created
         return plan
 
-    def create_dry_run_instance(
+    def start_instance(
         self,
         profile: ModelProfile,
         decision_payload: dict[str, Any],
+        gpu_by_id: dict[str, GpuState],
     ) -> BackendInstance:
         gpu_id = str(decision_payload["gpu_id"])
+        gpu = gpu_by_id[gpu_id]
         instance_id = instance_id_for(profile.public_name, gpu_id, now_iso())
-        return BackendInstance(
-            instance_id=instance_id,
-            model=profile.public_name,
-            backend_model=profile.backend_model,
-            runtime=profile.runtime,
-            base_url=f"dry-run://{profile.public_name}/{instance_id}",
-            gpu_ids=[gpu_id],
-            state="ready" if self.dry_run else "starting",
-            reserved_vram_mb=int(decision_payload["required_vram_mb"]),
-            dry_run=self.dry_run,
+        host_port = self.registry.next_host_port(profile.public_name, profile.host_port_start)
+        reserved_vram_mb = int(decision_payload["required_vram_mb"])
+        adapter = adapter_for(profile, dry_run=self.dry_run, docker_binary=self.docker_binary)
+        instance = adapter.start(
+            profile,
+            gpu_id,
+            gpu.index,
+            host_port,
+            instance_id,
+            reserved_vram_mb,
         )
+        if self.dry_run:
+            instance.base_url = f"dry-run://{profile.public_name}/{instance_id}"
+        elif profile.runtime == "vllm":
+            instance.base_url = f"http://{profile.public_host}:{host_port}/v1"
+        return instance
 
 
 def instance_id_for(model: str, gpu_id: str, seed: str) -> str:

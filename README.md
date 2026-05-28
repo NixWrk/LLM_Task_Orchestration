@@ -6,6 +6,7 @@ The goal is to make one controlled entry point for all internal LLM traffic:
 
 - Queue proxy is the public API endpoint for internal services.
 - Queue proxy controls per-model concurrency, queue size, queue timeout, and token budget.
+- Queue proxy can route through the lifecycle backend registry when ready backend instances exist.
 - LiteLLM handles OpenAI-compatible routing and provider abstraction.
 - LM Studio runs locally on the host and serves the model for the first backend.
 - Postgres and Redis are available for LiteLLM state.
@@ -200,6 +201,40 @@ On a machine without NVIDIA drivers, set `GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON`
 {"gpus":[{"id":"gpu0","index":0,"name":"fake","memory_total_mb":24576,"memory_used_mb":2048}]}
 ```
 
+Queue proxy can use ready HTTP backends from the lifecycle registry:
+
+```text
+ENABLE_BACKEND_REGISTRY_ROUTING=true
+```
+
+By default it falls back to `UPSTREAM_LITELLM_BASE_URL` when the registry has no ready HTTP backend. To force registry-only routing:
+
+```text
+REQUIRE_BACKEND_REGISTRY_BACKEND=true
+```
+
+The lifecycle service now has a runtime adapter layer. Dry-run mode records the command that would be used. For a vLLM model profile, the generated command is shaped like:
+
+```powershell
+docker run -d `
+  --name llm-<instance> `
+  --gpus device=0 `
+  -p 8100:8000 `
+  vllm/vllm-openai:latest `
+  --model /models/qwen `
+  --served-model-name qwen `
+  --host 0.0.0.0 `
+  --port 8000
+```
+
+Real Docker launching is intentionally opt-in:
+
+```text
+LIFECYCLE_DRY_RUN=false
+```
+
+For real container launching, run lifecycle where the `docker` CLI and Docker socket are available, or adapt the deployment to mount them explicitly.
+
 ## Development
 
 Run the healthcheck service locally:
@@ -238,6 +273,8 @@ Implemented now:
 - Integration tests for non-streaming, streaming, token rejection, queue overflow, queue timeout, and upstream failure.
 - GPU inventory service with `nvidia-smi` parser and fake inventory mode.
 - Lifecycle dry-run scheduler with backend registry and VRAM-aware placement.
+- Registry-aware queue proxy routing.
+- Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Environment-driven settings.
 - Smoke test scripts.
 - Basic FastAPI healthcheck with Prometheus metrics.
@@ -245,6 +282,7 @@ Implemented now:
 Next phases:
 
 - Runtime adapters that actually start/stop vLLM/SGLang/LM Studio backends.
-- Queue proxy routing across backend registry replicas.
+- Queue proxy active request accounting back into backend registry.
+- Idle draining and stop logic for backend instances.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.

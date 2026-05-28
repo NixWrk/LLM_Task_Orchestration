@@ -13,6 +13,9 @@ class Settings(BaseSettings):
         validation_alias="UPSTREAM_LITELLM_BASE_URL",
     )
     upstream_api_key: str = Field(default="", validation_alias="LITELLM_MASTER_KEY")
+    backend_registry_url: str = Field(default="", validation_alias="BACKEND_REGISTRY_URL")
+    enable_backend_registry_routing: bool = False
+    require_backend_registry_backend: bool = False
     queue_proxy_api_key: str = ""
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     log_level: str = "INFO"

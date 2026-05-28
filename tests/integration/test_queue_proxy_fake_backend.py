@@ -247,6 +247,39 @@ def test_upstream_unavailable_returns_502_and_releases_slot(
     assert status_response.json()["models"][0]["active_requests"] == 0
 
 
+def test_queue_proxy_routes_through_backend_registry(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    registry_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+
+    with running_fake_backend(fake_port), running_fake_registry(
+        registry_port,
+        f"http://127.0.0.1:{fake_port}",
+    ), running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        registry_port=registry_port,
+        require_registry_backend=True,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            json={
+                "model": "local-main",
+                "messages": [{"role": "user", "content": "registry route"}],
+            },
+            timeout=5,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "ok"
+
+
 @contextmanager
 def running_fake_backend(port: int) -> Iterator[None]:
     env = service_env("services/fake_openai_backend")
@@ -281,12 +314,18 @@ def running_queue_proxy(
     port: int,
     upstream_port: int,
     config_path: Path,
+    registry_port: int | None = None,
+    require_registry_backend: bool = False,
 ) -> Iterator[None]:
     env = service_env("services/queue_proxy")
     env["QUEUE_PROXY_CONFIG_PATH"] = str(config_path)
     env["UPSTREAM_LITELLM_BASE_URL"] = f"http://127.0.0.1:{upstream_port}"
     env["LITELLM_MASTER_KEY"] = "test-key"
     env["REQUEST_TIMEOUT_SECONDS"] = "1"
+    if registry_port is not None:
+        env["BACKEND_REGISTRY_URL"] = f"http://127.0.0.1:{registry_port}"
+        env["ENABLE_BACKEND_REGISTRY_ROUTING"] = "true"
+        env["REQUIRE_BACKEND_REGISTRY_BACKEND"] = str(require_registry_backend).lower()
 
     process = subprocess.Popen(
         [
@@ -307,6 +346,40 @@ def running_queue_proxy(
         stderr=subprocess.PIPE,
     )
     runner = RunningProcess(process, "queue-proxy")
+    try:
+        wait_for_http(f"http://127.0.0.1:{port}/health", process, runner.name)
+        yield
+    finally:
+        runner.stop()
+
+
+@contextmanager
+def running_fake_registry(
+    port: int,
+    backend_url: str,
+) -> Iterator[None]:
+    env = service_env("services/queue_proxy")
+    env["FAKE_REGISTRY_BACKEND_URL"] = backend_url
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "tests.support.fake_registry_app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+        ],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    runner = RunningProcess(process, "fake-registry")
     try:
         wait_for_http(f"http://127.0.0.1:{port}/health", process, runner.name)
         yield
@@ -354,7 +427,7 @@ def write_policy_config(
 
 def service_env(*relative_paths: str) -> dict[str, str]:
     env = os.environ.copy()
-    service_paths = [str(ROOT / relative_path) for relative_path in relative_paths]
+    service_paths = [str(ROOT), *(str(ROOT / relative_path) for relative_path in relative_paths)]
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
         service_paths.append(existing_pythonpath)

@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     )
     gpu_inventory_url: str = "http://gpu-inventory:4200"
     dry_run: bool = Field(default=True, validation_alias="LIFECYCLE_DRY_RUN")
+    enable_reconcile_loop: bool = Field(
+        default=False,
+        validation_alias="LIFECYCLE_ENABLE_RECONCILE_LOOP",
+    )
+    reconcile_interval_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        validation_alias="LIFECYCLE_RECONCILE_INTERVAL_SECONDS",
+    )
+    docker_binary: str = Field(default="docker", validation_alias="LIFECYCLE_DOCKER_BINARY")
     request_timeout_seconds: float = Field(default=5.0, gt=0)
     log_level: str = "INFO"
 

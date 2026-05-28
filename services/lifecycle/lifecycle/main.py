@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from contextlib import suppress
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -41,13 +43,41 @@ controller = LifecycleController(
     gpu_inventory_url=settings.gpu_inventory_url,
     request_timeout_seconds=settings.request_timeout_seconds,
     dry_run=settings.dry_run,
+    docker_binary=settings.docker_binary,
 )
 app = FastAPI(title="local-llm-orchestrator lifecycle", version="0.1.0")
+reconcile_task: asyncio.Task[None] | None = None
+
+
+@app.on_event("startup")
+async def start_reconcile_loop() -> None:
+    global reconcile_task
+    if settings.enable_reconcile_loop:
+        reconcile_task = asyncio.create_task(periodic_reconcile_loop())
+
+
+@app.on_event("shutdown")
+async def stop_reconcile_loop() -> None:
+    if reconcile_task is None:
+        return
+    reconcile_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await reconcile_task
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"service": settings.service_name, "status": "healthy"}
+
+
+@app.get("/ready")
+async def ready() -> dict[str, object]:
+    return {
+        "service": settings.service_name,
+        "status": "healthy",
+        "dry_run": settings.dry_run,
+        "reconcile_loop_enabled": settings.enable_reconcile_loop,
+    }
 
 
 @app.get("/models")
@@ -91,3 +121,12 @@ async def metrics() -> Response:
         "\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+async def periodic_reconcile_loop() -> None:
+    while True:
+        try:
+            await controller.reconcile({})
+        except Exception:
+            logging.getLogger(__name__).exception("periodic_reconcile_failed")
+        await asyncio.sleep(settings.reconcile_interval_seconds)

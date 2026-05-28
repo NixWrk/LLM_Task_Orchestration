@@ -34,6 +34,14 @@ def load_model_profiles(path: str) -> dict[str, ModelProfile]:
             backend_model=str(model_data.get("backend_model") or public_name),
             runtime=str(lifecycle_data.get("runtime", model_data.get("runtime", "external"))),
             artifact=optional_str(lifecycle_data.get("artifact", model_data.get("artifact"))),
+            runtime_image=optional_str(
+                lifecycle_data.get("runtime_image", model_data.get("runtime_image"))
+            ),
+            host_port_start=int(lifecycle_data.get("host_port_start", 8100)),
+            container_port=int(lifecycle_data.get("container_port", 8000)),
+            public_host=str(lifecycle_data.get("public_host", "host.docker.internal")),
+            docker_extra_args=string_tuple(lifecycle_data.get("docker_extra_args", [])),
+            runtime_extra_args=string_tuple(lifecycle_data.get("runtime_extra_args", [])),
             estimated_vram_mb=estimated_vram_mb,
             safety_margin_mb=safety_margin_mb,
             min_replicas=int(lifecycle_data.get("min_replicas", 0)),
@@ -56,3 +64,11 @@ def optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def string_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, list):
+        return tuple(str(item) for item in value)
+    return (str(value),)

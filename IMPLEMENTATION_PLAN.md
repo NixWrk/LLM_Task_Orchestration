@@ -36,6 +36,8 @@
 - Integration tests для non-streaming, streaming, token budget rejection, queue overflow, queue timeout и upstream unavailable.
 - GPU Inventory service с `nvidia-smi` parser, fake inventory mode и `/gpus`.
 - Lifecycle dry-run scheduler с backend registry и VRAM-aware placement.
+- Queue proxy routing через ready HTTP backend instances из lifecycle registry.
+- Runtime adapter layer с Docker vLLM command generation.
 
 Главный пробел:
 
@@ -305,13 +307,12 @@ Control Plane должен работать циклом reconcile: сравни
 ## Рекомендуемый порядок ближайших работ
 
 1. Довести queue proxy до production-safe состояния: disconnect handling, request ids, stable errors.
-2. Подключить queue proxy router к backend registry.
-3. Добавить первый runtime adapter для Docker vLLM.
-4. Добавить периодический reconcile loop.
-5. Добавить idle drain/stop logic.
-6. Добавить scaling policy на основе queue pressure.
-7. Добавить Grafana dashboards.
-8. Закрыть security/ops контур.
+2. Добавить queue proxy active request accounting back into backend registry.
+3. Довести Docker vLLM adapter до production deployment: docker socket/CLI, volumes, healthcheck.
+4. Добавить idle drain/stop logic.
+5. Добавить scaling policy на основе queue pressure.
+6. Добавить Grafana dashboards.
+7. Закрыть security/ops контур.
 
 ## Минимальная целевая версия
 

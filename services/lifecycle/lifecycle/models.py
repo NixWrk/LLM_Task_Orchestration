@@ -33,6 +33,12 @@ class ModelProfile:
     backend_model: str
     runtime: str
     artifact: str | None
+    runtime_image: str | None
+    host_port_start: int
+    container_port: int
+    public_host: str
+    docker_extra_args: tuple[str, ...]
+    runtime_extra_args: tuple[str, ...]
     estimated_vram_mb: int
     safety_margin_mb: int
     min_replicas: int
@@ -51,6 +57,9 @@ class BackendInstance:
     gpu_ids: list[str]
     state: BackendState
     reserved_vram_mb: int
+    host_port: int | None = None
+    container_name: str | None = None
+    runtime_command: list[str] = field(default_factory=list)
     active_requests: int = 0
     created_at: str = field(default_factory=lambda: now_iso())
     updated_at: str = field(default_factory=lambda: now_iso())
@@ -71,6 +80,9 @@ class BackendInstance:
             gpu_ids=[str(gpu_id) for gpu_id in payload.get("gpu_ids", [])],
             state=payload.get("state", "ready"),
             reserved_vram_mb=int(payload.get("reserved_vram_mb", 0)),
+            host_port=optional_int(payload.get("host_port")),
+            container_name=payload.get("container_name"),
+            runtime_command=[str(part) for part in payload.get("runtime_command", [])],
             active_requests=int(payload.get("active_requests", 0)),
             created_at=str(payload.get("created_at") or now_iso()),
             updated_at=str(payload.get("updated_at") or now_iso()),
@@ -94,3 +106,9 @@ class PlacementDecision:
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)

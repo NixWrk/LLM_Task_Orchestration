@@ -59,6 +59,9 @@ services:
       SERVICE_NAME: queue-proxy
       QUEUE_PROXY_CONFIG_PATH: /app/config/orchestrator.yaml
       UPSTREAM_LITELLM_BASE_URL: http://litellm:4000
+      BACKEND_REGISTRY_URL: http://lifecycle:4300
+      ENABLE_BACKEND_REGISTRY_ROUTING: ${ENABLE_BACKEND_REGISTRY_ROUTING:-false}
+      REQUIRE_BACKEND_REGISTRY_BACKEND: ${REQUIRE_BACKEND_REGISTRY_BACKEND:-false}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-change-this-local-key}
       QUEUE_PROXY_API_KEY: ${QUEUE_PROXY_API_KEY:-}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
@@ -67,8 +70,11 @@ services:
       - ./config/orchestrator.yaml:/app/config/orchestrator.yaml:ro
     ports:
       - "4100:4100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - litellm
+      - lifecycle
     networks:
       - gateway
 
@@ -119,6 +125,9 @@ services:
       BACKEND_REGISTRY_PATH: /app/state/backend_registry.json
       GPU_INVENTORY_URL: http://gpu-inventory:4200
       LIFECYCLE_DRY_RUN: ${LIFECYCLE_DRY_RUN:-true}
+      LIFECYCLE_ENABLE_RECONCILE_LOOP: ${LIFECYCLE_ENABLE_RECONCILE_LOOP:-false}
+      LIFECYCLE_RECONCILE_INTERVAL_SECONDS: ${LIFECYCLE_RECONCILE_INTERVAL_SECONDS:-15}
+      LIFECYCLE_DOCKER_BINARY: ${LIFECYCLE_DOCKER_BINARY:-docker}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
@@ -126,6 +135,8 @@ services:
       - lifecycle_state:/app/state
     ports:
       - "4300:4300"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - gpu-inventory
     networks:

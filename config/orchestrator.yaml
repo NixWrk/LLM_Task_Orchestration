@@ -33,6 +33,12 @@ models:
     lifecycle:
       runtime: external
       artifact: null
+      runtime_image: null
+      host_port_start: 8100
+      container_port: 8000
+      public_host: host.docker.internal
+      docker_extra_args: []
+      runtime_extra_args: []
       estimated_vram_gb: 8
       safety_margin_gb: 1
       min_replicas: 1
