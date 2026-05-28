@@ -156,9 +156,10 @@ async def forward_openai_path(path: str, request: Request) -> Response:
         )
 
     record_limiter_snapshot(limiter)
+    backend_instance_id: str | None = None
 
     try:
-        upstream_base_url = await resolve_upstream_base_url(policy.public_name)
+        upstream_base_url, backend_instance_id = await resolve_upstream(policy.public_name)
         if upstream_base_url is None:
             await limiter.release()
             record_limiter_snapshot(limiter)
@@ -180,6 +181,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             limiter=limiter,
             started_at=started_at,
             upstream_base_url=upstream_base_url,
+            backend_instance_id=backend_instance_id,
         )
 
         if policy_metadata:
@@ -194,6 +196,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
 
         return response
     except httpx.HTTPError as exc:
+        await release_backend_lease(backend_instance_id)
         await limiter.release()
         record_limiter_snapshot(limiter)
         ERRORS.labels(model=policy.public_name, error_type=type(exc).__name__).inc()
@@ -294,6 +297,7 @@ async def stream_upstream_response(
     limiter: Any,
     started_at: float,
     upstream_base_url: str,
+    backend_instance_id: str | None,
 ) -> StreamingResponse:
     client = httpx.AsyncClient(timeout=settings.request_timeout_seconds)
     upstream_request = client.build_request(
@@ -312,6 +316,7 @@ async def stream_upstream_response(
         finally:
             await upstream_response.aclose()
             await client.aclose()
+            await release_backend_lease(backend_instance_id)
             await limiter.release()
             record_limiter_snapshot(limiter)
             REQUESTS.labels(
@@ -331,24 +336,41 @@ async def stream_upstream_response(
     )
 
 
-async def resolve_upstream_base_url(model: str) -> str | None:
+async def resolve_upstream(model: str) -> tuple[str | None, str | None]:
     if not settings.enable_backend_registry_routing or backend_registry_client is None:
-        return settings.upstream_base_url
+        return settings.upstream_base_url, None
 
     try:
         backend = await backend_registry_client.choose_backend(model)
     except httpx.HTTPError as exc:
         logger.warning("backend_registry_lookup_failed error_type=%s", type(exc).__name__)
         if settings.require_backend_registry_backend:
-            return None
-        return settings.upstream_base_url
+            return None, None
+        return settings.upstream_base_url, None
 
     if backend is None:
         if settings.require_backend_registry_backend:
-            return None
-        return settings.upstream_base_url
+            return None, None
+        return settings.upstream_base_url, None
 
-    return backend.base_url
+    try:
+        await backend_registry_client.lease_backend(backend.instance_id)
+    except httpx.HTTPError as exc:
+        logger.warning("backend_registry_lease_failed error_type=%s", type(exc).__name__)
+        if settings.require_backend_registry_backend:
+            return None, None
+        return settings.upstream_base_url, None
+
+    return backend.base_url, backend.instance_id
+
+
+async def release_backend_lease(instance_id: str | None) -> None:
+    if instance_id is None or backend_registry_client is None:
+        return
+    try:
+        await backend_registry_client.release_backend(instance_id)
+    except httpx.HTTPError as exc:
+        logger.warning("backend_registry_release_failed error_type=%s", type(exc).__name__)
 
 
 def upstream_url(base_url: str, path: str) -> str:

@@ -275,9 +275,14 @@ def test_queue_proxy_routes_through_backend_registry(
             },
             timeout=5,
         )
+        registry_response = httpx.get(
+            f"http://127.0.0.1:{registry_port}/registry",
+            timeout=5,
+        )
 
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "ok"
+    assert registry_response.json()["instances"][0]["active_requests"] == 0
 
 
 @contextmanager

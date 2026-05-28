@@ -35,6 +35,9 @@ class BackendRegistry:
     def list(self) -> list[BackendInstance]:
         return list(self._instances.values())
 
+    def get(self, instance_id: str) -> BackendInstance:
+        return self._instances[instance_id]
+
     def active_for_model(self, model: str) -> list[BackendInstance]:
         return [
             instance
@@ -78,6 +81,15 @@ class BackendRegistry:
         instance = self._instances[instance_id]
         instance.state = state  # type: ignore[assignment]
         instance.updated_at = now_iso()
+        self.save()
+        return instance
+
+    def adjust_active_requests(self, instance_id: str, delta: int) -> BackendInstance:
+        instance = self._instances[instance_id]
+        instance.active_requests = max(0, instance.active_requests + delta)
+        instance.updated_at = now_iso()
+        if delta > 0:
+            instance.last_used_at = instance.updated_at
         self.save()
         return instance
 

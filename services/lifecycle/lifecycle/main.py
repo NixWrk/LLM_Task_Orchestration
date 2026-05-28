@@ -95,6 +95,18 @@ async def backend_registry() -> dict[str, object]:
     return {"instances": [instance.to_dict() for instance in registry.list()]}
 
 
+@app.post("/registry/{instance_id}/lease")
+async def lease_backend(instance_id: str) -> JSONResponse:
+    instance = registry.adjust_active_requests(instance_id, 1)
+    return JSONResponse(instance.to_dict())
+
+
+@app.delete("/registry/{instance_id}/lease")
+async def release_backend(instance_id: str) -> JSONResponse:
+    instance = registry.adjust_active_requests(instance_id, -1)
+    return JSONResponse(instance.to_dict())
+
+
 @app.post("/plan")
 async def plan(request: Request) -> JSONResponse:
     payload = await request.json()

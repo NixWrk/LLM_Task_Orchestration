@@ -42,6 +42,16 @@ class BackendRegistryClient:
             return None
         return min(candidates, key=lambda instance: instance.active_requests)
 
+    async def lease_backend(self, instance_id: str) -> None:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(f"{self.registry_url}/registry/{instance_id}/lease")
+            response.raise_for_status()
+
+    async def release_backend(self, instance_id: str) -> None:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.delete(f"{self.registry_url}/registry/{instance_id}/lease")
+            response.raise_for_status()
+
 
 def parse_registry_instances(payload: dict[str, Any]) -> list[BackendInstance]:
     raw_instances = payload.get("instances", [])

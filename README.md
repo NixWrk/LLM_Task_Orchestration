@@ -213,6 +213,8 @@ By default it falls back to `UPSTREAM_LITELLM_BASE_URL` when the registry has no
 REQUIRE_BACKEND_REGISTRY_BACKEND=true
 ```
 
+When registry routing is enabled, queue proxy leases the selected backend before forwarding the request and releases it when the upstream response finishes. That keeps `active_requests` in the lifecycle registry current enough for least-active routing decisions.
+
 The lifecycle service now has a runtime adapter layer. Dry-run mode records the command that would be used. For a vLLM model profile, the generated command is shaped like:
 
 ```powershell
@@ -274,6 +276,7 @@ Implemented now:
 - GPU inventory service with `nvidia-smi` parser and fake inventory mode.
 - Lifecycle dry-run scheduler with backend registry and VRAM-aware placement.
 - Registry-aware queue proxy routing.
+- Active request lease/release accounting between queue proxy and lifecycle registry.
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Environment-driven settings.
 - Smoke test scripts.
@@ -282,7 +285,6 @@ Implemented now:
 Next phases:
 
 - Runtime adapters that actually start/stop vLLM/SGLang/LM Studio backends.
-- Queue proxy active request accounting back into backend registry.
 - Idle draining and stop logic for backend instances.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.
