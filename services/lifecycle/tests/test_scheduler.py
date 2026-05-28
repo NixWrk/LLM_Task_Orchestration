@@ -1,0 +1,110 @@
+from pathlib import Path
+
+from lifecycle.config import load_model_profiles
+from lifecycle.models import BackendInstance, GpuState, ModelProfile
+from lifecycle.registry import BackendRegistry
+from lifecycle.scheduler import choose_gpu, desired_replicas
+
+
+def profile() -> ModelProfile:
+    return ModelProfile(
+        public_name="local-main",
+        backend_model="local-main",
+        runtime="vllm",
+        artifact="/models/local-main",
+        estimated_vram_mb=8 * 1024,
+        safety_margin_mb=1024,
+        min_replicas=1,
+        max_replicas=2,
+        idle_ttl_seconds=3600,
+        preferred_gpus=("auto",),
+    )
+
+
+def test_choose_gpu_selects_highest_available_vram(tmp_path: Path) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    decision = choose_gpu(
+        profile(),
+        [
+            GpuState("gpu0", 0, "small", 12000, 6000, 6000),
+            GpuState("gpu1", 1, "big", 24000, 4000, 20000),
+        ],
+        registry,
+    )
+
+    assert decision.action == "start"
+    assert decision.gpu_id == "gpu1"
+
+
+def test_choose_gpu_accounts_for_reserved_vram(tmp_path: Path) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="existing",
+            model="other",
+            backend_model="other",
+            runtime="vllm",
+            base_url="http://backend",
+            gpu_ids=["gpu1"],
+            state="ready",
+            reserved_vram_mb=15000,
+        )
+    )
+
+    decision = choose_gpu(
+        profile(),
+        [
+            GpuState("gpu0", 0, "small", 16000, 2000, 14000),
+            GpuState("gpu1", 1, "big", 24000, 4000, 20000),
+        ],
+        registry,
+    )
+
+    assert decision.action == "start"
+    assert decision.gpu_id == "gpu0"
+
+
+def test_choose_gpu_returns_noop_when_vram_is_insufficient(tmp_path: Path) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    decision = choose_gpu(
+        profile(),
+        [GpuState("gpu0", 0, "small", 12000, 8000, 4000)],
+        registry,
+    )
+
+    assert decision.action == "noop"
+    assert decision.reason == "no_gpu_with_enough_vram"
+
+
+def test_desired_replicas_scales_up_with_queue_pressure() -> None:
+    assert desired_replicas(profile(), ready_replicas=1, queue_length=3) == 2
+
+
+def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "models:",
+                "  qwen:",
+                "    public_name: qwen",
+                "    backend_model: qwen-backend",
+                "    lifecycle:",
+                "      runtime: vllm",
+                "      artifact: /models/qwen",
+                "      estimated_vram_gb: 14",
+                "      safety_margin_gb: 2",
+                "      min_replicas: 1",
+                "      max_replicas: 3",
+                "      idle_ttl_seconds: 120",
+                "      preferred_gpus: [gpu0, gpu1]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    profiles = load_model_profiles(str(config_path))
+
+    assert profiles["qwen"].estimated_vram_mb == 14 * 1024
+    assert profiles["qwen"].safety_margin_mb == 2 * 1024
+    assert profiles["qwen"].preferred_gpus == ("gpu0", "gpu1")

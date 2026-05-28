@@ -31,6 +31,10 @@ models:
     max_output_tokens: 1024
     max_total_tokens: 9216
     lifecycle:
+      runtime: external
+      artifact: null
+      estimated_vram_gb: 8
+      safety_margin_gb: 1
       min_replicas: 1
       max_replicas: 1
       idle_ttl_seconds: 3600

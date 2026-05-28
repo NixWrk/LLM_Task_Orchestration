@@ -10,6 +10,8 @@ The goal is to make one controlled entry point for all internal LLM traffic:
 - LM Studio runs locally on the host and serves the model for the first backend.
 - Postgres and Redis are available for LiteLLM state.
 - Healthcheck verifies LM Studio and the full queue proxy -> LiteLLM -> backend path.
+- GPU inventory exposes GPU/VRAM state for scheduling.
+- Lifecycle service calculates dry-run model placement and backend registry state.
 - Prometheus and Grafana are wired for service metrics.
 
 The first backend is LM Studio because it is convenient locally. For heavier multi-GPU serving, the intended migration path is to keep this orchestrator and replace or extend the backend with vLLM/SGLang instances.
@@ -26,6 +28,11 @@ Service A / Service B / OpenAI SDK compatible client
           -> LM Studio OpenAI-compatible API on the host :1234
           -> Postgres
           -> Redis
+  -> GPU Inventory :4200
+      -> nvidia-smi / fake inventory
+  -> Lifecycle :4300
+      -> scheduler
+      -> backend registry
       -> Healthcheck service :8080
       -> Prometheus :9090
       -> Grafana :3000
@@ -89,7 +96,10 @@ For each public model you can set:
 - `max_input_tokens`: maximum estimated input size.
 - `max_output_tokens`: maximum output budget.
 - `max_total_tokens`: input estimate plus output budget.
-- `lifecycle.min_replicas` / `lifecycle.max_replicas`: desired future model replica bounds.
+- `lifecycle.estimated_vram_gb`: VRAM reservation for scheduler placement.
+- `lifecycle.safety_margin_gb`: extra VRAM headroom.
+- `lifecycle.preferred_gpus`: `auto` or explicit GPU ids such as `gpu0`.
+- `lifecycle.min_replicas` / `lifecycle.max_replicas`: desired model replica bounds.
 
 For Docker Desktop on Windows and macOS, the default backend URL usually works:
 
@@ -113,6 +123,8 @@ Useful URLs:
 
 - Queue proxy: `http://localhost:4100`
 - LiteLLM debug endpoint: `http://localhost:4000`
+- GPU inventory: `http://localhost:4200/gpus`
+- Lifecycle registry: `http://localhost:4300/registry`
 - Healthcheck: `http://localhost:8080/ready`
 - Metrics: `http://localhost:8080/metrics`
 - Prometheus: `http://localhost:9090`
@@ -152,6 +164,42 @@ For a request to `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, or 
 
 This gives immediate protection when several internal services call the same local model at the same time.
 
+## GPU Control Plane
+
+The current GPU management layer is intentionally dry-run. It does not start real vLLM/SGLang containers yet, but it does the scheduling work that real runtime adapters will use.
+
+GPU inventory:
+
+```powershell
+Invoke-RestMethod http://localhost:4200/gpus
+```
+
+Lifecycle placement plan:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:4300/plan `
+  -ContentType "application/json" `
+  -Body '{"queue_lengths":{"local-main":1}}'
+```
+
+Dry-run reconcile creates a registry entry for the planned backend instance:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:4300/reconcile `
+  -ContentType "application/json" `
+  -Body '{"queue_lengths":{"local-main":1}}'
+```
+
+On a machine without NVIDIA drivers, set `GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON` in `.env`:
+
+```json
+{"gpus":[{"id":"gpu0","index":0,"name":"fake","memory_total_mb":24576,"memory_used_mb":2048}]}
+```
+
 ## Development
 
 Run the healthcheck service locally:
@@ -188,13 +236,15 @@ Implemented now:
 - Queue proxy for per-model concurrency, queueing, and token budget enforcement.
 - Fake OpenAI-compatible backend for integration tests.
 - Integration tests for non-streaming, streaming, token rejection, queue overflow, queue timeout, and upstream failure.
+- GPU inventory service with `nvidia-smi` parser and fake inventory mode.
+- Lifecycle dry-run scheduler with backend registry and VRAM-aware placement.
 - Environment-driven settings.
 - Smoke test scripts.
 - Basic FastAPI healthcheck with Prometheus metrics.
 
 Next phases:
 
-- Backend registry and routing across several backend replicas.
-- Lifecycle controller for model loading, warmup, idle unload, and GPU placement.
+- Runtime adapters that actually start/stop vLLM/SGLang/LM Studio backends.
+- Queue proxy routing across backend registry replicas.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.

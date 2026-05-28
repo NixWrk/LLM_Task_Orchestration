@@ -41,6 +41,7 @@ Client / OpenAI SDK / Codex-compatible client
               -> Postgres
               -> Redis
       -> Healthcheck service
+      -> GPU inventory service
       -> Model lifecycle controller
       -> Metrics/logging stack
 ```
@@ -108,7 +109,7 @@ Redis is available for distributed routing/rate-limit state when multiple LiteLL
 
 ### Model Lifecycle Controller
 
-The lifecycle controller is the future control-plane component that starts, stops, warms, and unloads model runtimes.
+The lifecycle controller is the control-plane component that plans model placement, maintains backend registry state, and later starts, stops, warms, and unloads model runtimes.
 
 Responsibilities:
 
@@ -118,6 +119,19 @@ Responsibilities:
 - place model instances on allowed GPUs;
 - avoid starting models when estimated VRAM is unavailable;
 - expose desired and actual model state.
+
+The first implementation is dry-run: it creates planned backend instances in the registry but does not launch real runtime processes yet.
+
+### GPU Inventory
+
+GPU Inventory exposes normalized GPU state for the scheduler.
+
+Responsibilities:
+
+- collect GPU memory and utilization from `nvidia-smi`;
+- support fake inventory JSON for testing and non-GPU development machines;
+- expose `/gpus`;
+- expose Prometheus-compatible GPU memory metrics.
 
 ### Healthcheck Service
 

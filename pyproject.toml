@@ -22,10 +22,14 @@ pythonpath = [
   "services/healthcheck",
   "services/queue_proxy",
   "services/fake_openai_backend",
+  "services/gpu_inventory",
+  "services/lifecycle",
 ]
 testpaths = [
   "services/healthcheck/tests",
   "services/queue_proxy/tests",
+  "services/gpu_inventory/tests",
+  "services/lifecycle/tests",
   "tests/integration",
 ]
 addopts = "-q"

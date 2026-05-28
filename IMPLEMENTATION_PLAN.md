@@ -34,10 +34,12 @@
 - Unit-тесты для limiter и token policy.
 - Fake OpenAI-compatible backend для repeatable integration tests.
 - Integration tests для non-streaming, streaming, token budget rejection, queue overflow, queue timeout и upstream unavailable.
+- GPU Inventory service с `nvidia-smi` parser, fake inventory mode и `/gpus`.
+- Lifecycle dry-run scheduler с backend registry и VRAM-aware placement.
 
 Главный пробел:
 
-- пока нет control plane, который реально запускает, останавливает, прогревает и размещает модели по GPU.
+- пока нет runtime adapters, которые реально запускают, останавливают и прогревают модели.
 
 ## Архитектурная модель
 
@@ -161,12 +163,10 @@ Control Plane должен работать циклом reconcile: сравни
 
 Задачи:
 
-1. Добавить сервис или модуль GPU collector.
-2. Собирать данные через `nvidia-smi` или DCGM exporter.
-3. Нормализовать GPU ids и names.
-4. Хранить текущую карту GPU в registry.
-5. Добавить reserved VRAM per model.
-6. Добавить health state GPU.
+1. Добавить health state GPU.
+2. Добавить running process mapping.
+3. Перейти на DCGM exporter для production-метрик.
+4. Хранить последнюю карту GPU в registry/cache.
 
 Критерии готовности:
 
@@ -175,23 +175,22 @@ Control Plane должен работать циклом reconcile: сравни
 - scheduler может проверить, помещается ли модель на GPU;
 - метрики GPU доступны в Prometheus.
 
+Статус: базовая версия реализована через `nvidia-smi` и fake inventory JSON.
+
 ## Этап 4. Lifecycle Controller
 
 Задачи:
 
-1. Создать `services/lifecycle`.
-2. Реализовать reconcile loop.
-3. Читать `config/orchestrator.yaml`.
-4. Поддержать desired state: `min_replicas`, `max_replicas`, `idle_ttl_seconds`.
-5. Поддержать runtime adapters:
+1. Добавить периодический reconcile loop.
+2. Поддержать runtime adapters:
    - `lmstudio` adapter;
    - `docker-vllm` adapter;
    - `docker-sglang` adapter.
-6. Запускать backend instance на конкретном GPU.
-7. Прогревать модель warmup-запросом.
-8. Переводить backend в `ready` только после healthcheck.
-9. Останавливать idle backend после TTL.
-10. Перезапускать failed backend с backoff.
+3. Запускать backend instance на конкретном GPU.
+4. Прогревать модель warmup-запросом.
+5. Переводить backend в `ready` только после healthcheck.
+6. Останавливать idle backend после TTL.
+7. Перезапускать failed backend с backoff.
 
 Критерии готовности:
 
@@ -200,6 +199,8 @@ Control Plane должен работать циклом reconcile: сравни
 - controller не запускает модель, если нет VRAM;
 - controller останавливает idle модели;
 - все переходы состояния видны через API и logs.
+
+Статус: dry-run planner и backend registry реализованы; реальный запуск runtime-ов еще не реализован.
 
 ## Этап 5. Scheduler
 
@@ -304,14 +305,13 @@ Control Plane должен работать циклом reconcile: сравни
 ## Рекомендуемый порядок ближайших работ
 
 1. Довести queue proxy до production-safe состояния: disconnect handling, request ids, stable errors.
-2. Сделать backend registry.
-3. Подключить router к registry.
-4. Сделать GPU inventory через `nvidia-smi`.
-5. Сделать lifecycle controller с dry-run режимом.
-6. Добавить первый runtime adapter для Docker vLLM.
-7. Добавить scaling policy на основе queue pressure.
-8. Добавить Grafana dashboards.
-9. Закрыть security/ops контур.
+2. Подключить queue proxy router к backend registry.
+3. Добавить первый runtime adapter для Docker vLLM.
+4. Добавить периодический reconcile loop.
+5. Добавить idle drain/stop logic.
+6. Добавить scaling policy на основе queue pressure.
+7. Добавить Grafana dashboards.
+8. Закрыть security/ops контур.
 
 ## Минимальная целевая версия
 

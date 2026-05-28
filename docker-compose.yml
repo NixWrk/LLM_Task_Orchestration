@@ -98,6 +98,39 @@ services:
     networks:
       - gateway
 
+  gpu-inventory:
+    build:
+      context: ./services/gpu_inventory
+    environment:
+      GPU_INVENTORY_NVIDIA_SMI_PATH: ${GPU_INVENTORY_NVIDIA_SMI_PATH:-nvidia-smi}
+      GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON: ${GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON:-}
+      GPU_INVENTORY_COMMAND_TIMEOUT_SECONDS: ${GPU_INVENTORY_COMMAND_TIMEOUT_SECONDS:-5}
+      GPU_INVENTORY_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "4200:4200"
+    networks:
+      - gateway
+
+  lifecycle:
+    build:
+      context: ./services/lifecycle
+    environment:
+      LIFECYCLE_CONFIG_PATH: /app/config/orchestrator.yaml
+      BACKEND_REGISTRY_PATH: /app/state/backend_registry.json
+      GPU_INVENTORY_URL: http://gpu-inventory:4200
+      LIFECYCLE_DRY_RUN: ${LIFECYCLE_DRY_RUN:-true}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config/orchestrator.yaml:/app/config/orchestrator.yaml:ro
+      - lifecycle_state:/app/state
+    ports:
+      - "4300:4300"
+    depends_on:
+      - gpu-inventory
+    networks:
+      - gateway
+
   fake-backend:
     profiles:
       - test
@@ -144,6 +177,7 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  lifecycle_state:
 
 networks:
   gateway:

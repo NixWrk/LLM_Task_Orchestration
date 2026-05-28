@@ -1,0 +1,1 @@
+"""GPU inventory service package."""
