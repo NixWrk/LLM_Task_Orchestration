@@ -39,6 +39,7 @@
 - Queue proxy routing через ready HTTP backend instances из lifecycle registry.
 - Runtime adapter layer с Docker vLLM command generation.
 - Active request accounting через lease/release endpoints lifecycle registry.
+- Docker vLLM adapter с volume/env support, Docker CLI image, Docker socket deployment, healthcheck/warmup и idle stop.
 
 Главный пробел:
 
@@ -308,8 +309,8 @@ Control Plane должен работать циклом reconcile: сравни
 ## Рекомендуемый порядок ближайших работ
 
 1. Довести queue proxy до production-safe состояния: disconnect handling, request ids, stable errors.
-2. Довести Docker vLLM adapter до production deployment: docker socket/CLI, volumes, healthcheck.
-3. Добавить idle drain/stop logic.
+2. Добавить allocation API `/allocations` поверх lifecycle primitives.
+3. Добавить runtime health rechecks для already-ready backend instances.
 4. Добавить scaling policy на основе queue pressure.
 5. Добавить Grafana dashboards.
 6. Закрыть security/ops контур.

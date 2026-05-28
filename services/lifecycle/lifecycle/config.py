@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from lifecycle.models import ModelProfile
+from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
 
 def load_model_profiles(path: str) -> dict[str, ModelProfile]:
@@ -42,6 +42,16 @@ def load_model_profiles(path: str) -> dict[str, ModelProfile]:
             public_host=str(lifecycle_data.get("public_host", "host.docker.internal")),
             docker_extra_args=string_tuple(lifecycle_data.get("docker_extra_args", [])),
             runtime_extra_args=string_tuple(lifecycle_data.get("runtime_extra_args", [])),
+            volume_mounts=volume_mounts(lifecycle_data.get("volumes", [])),
+            environment=environment_variables(lifecycle_data.get("environment", {})),
+            healthcheck_path=str(lifecycle_data.get("healthcheck_path", "/v1/models")),
+            startup_timeout_seconds=float(lifecycle_data.get("startup_timeout_seconds", 120)),
+            healthcheck_interval_seconds=float(
+                lifecycle_data.get("healthcheck_interval_seconds", 2)
+            ),
+            warmup_enabled=bool(lifecycle_data.get("warmup_enabled", True)),
+            warmup_prompt=str(lifecycle_data.get("warmup_prompt", "Return exactly: ok")),
+            warmup_max_tokens=int(lifecycle_data.get("warmup_max_tokens", 8)),
             estimated_vram_mb=estimated_vram_mb,
             safety_margin_mb=safety_margin_mb,
             min_replicas=int(lifecycle_data.get("min_replicas", 0)),
@@ -72,3 +82,33 @@ def string_tuple(value: Any) -> tuple[str, ...]:
     if isinstance(value, list):
         return tuple(str(item) for item in value)
     return (str(value),)
+
+
+def volume_mounts(value: Any) -> tuple[VolumeMount, ...]:
+    if not isinstance(value, list):
+        return ()
+    mounts: list[VolumeMount] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        host_path = optional_str(item.get("host_path") or item.get("host"))
+        container_path = optional_str(item.get("container_path") or item.get("container"))
+        if not host_path or not container_path:
+            continue
+        mounts.append(
+            VolumeMount(
+                host_path=host_path,
+                container_path=container_path,
+                mode=str(item.get("mode") or "ro"),
+            )
+        )
+    return tuple(mounts)
+
+
+def environment_variables(value: Any) -> tuple[EnvironmentVariable, ...]:
+    if not isinstance(value, dict):
+        return ()
+    return tuple(
+        EnvironmentVariable(name=str(name), value=str(raw_value))
+        for name, raw_value in value.items()
+    )

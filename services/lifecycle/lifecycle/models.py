@@ -39,6 +39,14 @@ class ModelProfile:
     public_host: str
     docker_extra_args: tuple[str, ...]
     runtime_extra_args: tuple[str, ...]
+    volume_mounts: tuple[VolumeMount, ...]
+    environment: tuple[EnvironmentVariable, ...]
+    healthcheck_path: str
+    startup_timeout_seconds: float
+    healthcheck_interval_seconds: float
+    warmup_enabled: bool
+    warmup_prompt: str
+    warmup_max_tokens: int
     estimated_vram_mb: int
     safety_margin_mb: int
     min_replicas: int
@@ -61,6 +69,7 @@ class BackendInstance:
     container_name: str | None = None
     runtime_command: list[str] = field(default_factory=list)
     active_requests: int = 0
+    failure_reason: str | None = None
     created_at: str = field(default_factory=lambda: now_iso())
     updated_at: str = field(default_factory=lambda: now_iso())
     last_used_at: str | None = None
@@ -84,6 +93,7 @@ class BackendInstance:
             container_name=payload.get("container_name"),
             runtime_command=[str(part) for part in payload.get("runtime_command", [])],
             active_requests=int(payload.get("active_requests", 0)),
+            failure_reason=payload.get("failure_reason"),
             created_at=str(payload.get("created_at") or now_iso()),
             updated_at=str(payload.get("updated_at") or now_iso()),
             last_used_at=payload.get("last_used_at"),
@@ -104,8 +114,25 @@ class PlacementDecision:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class VolumeMount:
+    host_path: str
+    container_path: str
+    mode: str = "ro"
+
+
+@dataclass(frozen=True)
+class EnvironmentVariable:
+    name: str
+    value: str
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def optional_int(value: Any) -> int | None:

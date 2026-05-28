@@ -119,7 +119,7 @@ def docker_vllm_command(
     docker_binary: str = "docker",
 ) -> list[str]:
     image = profile.runtime_image or "vllm/vllm-openai:latest"
-    model = profile.artifact or profile.backend_model
+    model = container_model_path(profile)
     command = [
         docker_binary,
         "run",
@@ -130,6 +130,8 @@ def docker_vllm_command(
         f"device={gpu_index}",
         "-p",
         f"{host_port}:{profile.container_port}",
+        *docker_volume_args(profile),
+        *docker_environment_args(profile),
         *profile.docker_extra_args,
         image,
         "--model",
@@ -147,3 +149,35 @@ def docker_vllm_command(
 
 def container_name(instance_id: str) -> str:
     return f"llm-{instance_id}".replace("_", "-").replace("/", "-").lower()
+
+
+def docker_volume_args(profile: ModelProfile) -> list[str]:
+    args: list[str] = []
+    for mount in profile.volume_mounts:
+        args.extend(["-v", f"{mount.host_path}:{mount.container_path}:{mount.mode}"])
+    return args
+
+
+def docker_environment_args(profile: ModelProfile) -> list[str]:
+    args: list[str] = []
+    for item in profile.environment:
+        args.extend(["-e", f"{item.name}={item.value}"])
+    return args
+
+
+def container_model_path(profile: ModelProfile) -> str:
+    if not profile.artifact:
+        return profile.backend_model
+
+    for mount in profile.volume_mounts:
+        normalized_host = mount.host_path.rstrip("/\\")
+        normalized_artifact = profile.artifact.rstrip("/\\")
+        if normalized_artifact == normalized_host:
+            return mount.container_path
+        if normalized_artifact.startswith(f"{normalized_host}/") or normalized_artifact.startswith(
+            f"{normalized_host}\\"
+        ):
+            suffix = normalized_artifact[len(normalized_host) :].lstrip("/\\")
+            return f"{mount.container_path.rstrip('/')}/{suffix.replace(chr(92), '/')}"
+
+    return profile.artifact

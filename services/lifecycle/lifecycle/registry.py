@@ -84,6 +84,14 @@ class BackendRegistry:
         self.save()
         return instance
 
+    def mark_failed(self, instance_id: str, reason: str) -> BackendInstance:
+        instance = self._instances[instance_id]
+        instance.state = "failed"
+        instance.failure_reason = reason
+        instance.updated_at = now_iso()
+        self.save()
+        return instance
+
     def adjust_active_requests(self, instance_id: str, delta: int) -> BackendInstance:
         instance = self._instances[instance_id]
         instance.active_requests = max(0, instance.active_requests + delta)

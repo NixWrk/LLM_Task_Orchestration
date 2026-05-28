@@ -1,5 +1,5 @@
 from lifecycle.adapters import DockerVllmAdapter, DryRunAdapter, docker_vllm_command
-from lifecycle.models import ModelProfile
+from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
 
 def profile() -> ModelProfile:
@@ -14,6 +14,14 @@ def profile() -> ModelProfile:
         public_host="host.docker.internal",
         docker_extra_args=("--ipc=host",),
         runtime_extra_args=("--max-model-len", "8192"),
+        volume_mounts=(),
+        environment=(),
+        healthcheck_path="/v1/models",
+        startup_timeout_seconds=120,
+        healthcheck_interval_seconds=2,
+        warmup_enabled=True,
+        warmup_prompt="Return exactly: ok",
+        warmup_max_tokens=8,
         estimated_vram_mb=14 * 1024,
         safety_margin_mb=2 * 1024,
         min_replicas=1,
@@ -33,6 +41,26 @@ def test_docker_vllm_command_contains_gpu_port_and_model() -> None:
     assert "--model" in command
     assert "/models/qwen" in command
     assert "--max-model-len" in command
+
+
+def test_docker_vllm_command_maps_host_model_path_to_container_path() -> None:
+    mounted = ModelProfile(
+        **{
+            **profile().__dict__,
+            "artifact": "D:/models/qwen",
+            "volume_mounts": (VolumeMount("D:/models/qwen", "/models/qwen", "ro"),),
+            "environment": (EnvironmentVariable("HF_HOME", "/cache/hf"),),
+        }
+    )
+
+    command = docker_vllm_command(mounted, gpu_index=1, host_port=8101, instance_id="qwen-2")
+
+    assert "-v" in command
+    assert "D:/models/qwen:/models/qwen:ro" in command
+    assert "-e" in command
+    assert "HF_HOME=/cache/hf" in command
+    assert "/models/qwen" in command
+    assert "device=1" in command
 
 
 def test_docker_vllm_adapter_dry_instance_base_url_shape(monkeypatch) -> None:

@@ -133,6 +133,7 @@ services:
     volumes:
       - ./config/orchestrator.yaml:/app/config/orchestrator.yaml:ro
       - lifecycle_state:/app/state
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "4300:4300"
     extra_hosts:

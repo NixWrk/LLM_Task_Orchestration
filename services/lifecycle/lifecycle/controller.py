@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+from time import monotonic
 from typing import Any
 
 import httpx
 
 from lifecycle.adapters import adapter_for
 from lifecycle.config import load_model_profiles
-from lifecycle.models import BackendInstance, GpuState, ModelProfile, PlacementDecision, now_iso
+from lifecycle.models import (
+    BackendInstance,
+    GpuState,
+    ModelProfile,
+    PlacementDecision,
+    now_iso,
+    parse_iso,
+)
 from lifecycle.registry import BackendRegistry
 from lifecycle.scheduler import choose_gpu, desired_replicas
 
@@ -99,9 +107,11 @@ class LifecycleController:
         }
 
     async def reconcile(self, queue_lengths: dict[str, int] | None = None) -> dict[str, Any]:
+        queue_lengths = queue_lengths or {}
+        profiles = self.profiles()
+        stopped = await self.stop_idle_instances(profiles, queue_lengths)
         plan = await self.plan(queue_lengths)
         created: list[dict[str, Any]] = []
-        profiles = self.profiles()
 
         for model_plan in plan["models"]:
             profile = profiles[model_plan["model"]]
@@ -111,9 +121,11 @@ class LifecycleController:
                     continue
                 instance = self.start_instance(profile, decision_payload, gpus)
                 self.registry.upsert(instance)
+                instance = await self.initialize_instance(profile, instance)
                 created.append(instance.to_dict())
 
         plan["created_instances"] = created
+        plan["stopped_instances"] = stopped
         return plan
 
     def start_instance(
@@ -142,6 +154,99 @@ class LifecycleController:
             instance.base_url = f"http://{profile.public_host}:{host_port}/v1"
         return instance
 
+    async def initialize_instance(
+        self,
+        profile: ModelProfile,
+        instance: BackendInstance,
+    ) -> BackendInstance:
+        if instance.dry_run:
+            return self.registry.mark_state(instance.instance_id, "ready")
+
+        try:
+            await self.wait_for_health(profile, instance)
+            self.registry.mark_state(instance.instance_id, "warming")
+            if profile.warmup_enabled:
+                await self.warmup(profile, instance)
+            return self.registry.mark_state(instance.instance_id, "ready")
+        except Exception as exc:
+            return self.registry.mark_failed(instance.instance_id, type(exc).__name__)
+
+    async def wait_for_health(
+        self,
+        profile: ModelProfile,
+        instance: BackendInstance,
+    ) -> None:
+        deadline = monotonic() + profile.startup_timeout_seconds
+        last_error: Exception | None = None
+        while monotonic() < deadline:
+            try:
+                async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+                    response = await client.get(openai_url(instance.base_url, profile.healthcheck_path))
+                    if 200 <= response.status_code < 300:
+                        return
+            except httpx.HTTPError as exc:
+                last_error = exc
+            await async_sleep(profile.healthcheck_interval_seconds)
+        if last_error:
+            raise last_error
+        raise TimeoutError(f"Backend {instance.instance_id} did not become healthy.")
+
+    async def warmup(self, profile: ModelProfile, instance: BackendInstance) -> None:
+        payload = {
+            "model": profile.backend_model,
+            "messages": [{"role": "user", "content": profile.warmup_prompt}],
+            "temperature": 0,
+            "max_tokens": profile.warmup_max_tokens,
+        }
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+            response = await client.post(
+                openai_url(instance.base_url, "/chat/completions"),
+                json=payload,
+            )
+            response.raise_for_status()
+
+    async def stop_idle_instances(
+        self,
+        profiles: dict[str, ModelProfile],
+        queue_lengths: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        stopped: list[dict[str, Any]] = []
+        for profile in profiles.values():
+            if queue_lengths.get(profile.public_name, 0) > 0:
+                continue
+            ready_instances = self.registry.ready_for_model(profile.public_name)
+            candidates = [
+                instance
+                for instance in ready_instances
+                if instance.active_requests == 0
+                and idle_seconds(instance) >= profile.idle_ttl_seconds
+            ]
+            candidates.sort(key=lambda instance: idle_reference(instance))
+
+            removable_count = max(0, len(ready_instances) - profile.min_replicas)
+            for instance in candidates[:removable_count]:
+                stopped.append(await self.stop_instance(profile, instance))
+        return stopped
+
+    async def stop_instance(
+        self,
+        profile: ModelProfile,
+        instance: BackendInstance,
+    ) -> dict[str, Any]:
+        self.registry.mark_state(instance.instance_id, "draining")
+        try:
+            adapter = adapter_for(
+                profile,
+                dry_run=instance.dry_run or self.dry_run,
+                docker_binary=self.docker_binary,
+            )
+            adapter.stop(instance)
+            stopped = self.registry.mark_state(instance.instance_id, "stopped")
+            return stopped.to_dict()
+        except Exception as exc:
+            failed = self.registry.mark_failed(instance.instance_id, type(exc).__name__)
+            return failed.to_dict()
+
 
 def instance_id_for(model: str, gpu_id: str, seed: str) -> str:
     digest = hashlib.sha1(f"{model}:{gpu_id}:{seed}".encode("utf-8")).hexdigest()[:8]
@@ -154,3 +259,27 @@ def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     return {str(model): int(length) for model, length in raw.items()}
+
+
+async def async_sleep(seconds: float) -> None:
+    import asyncio
+
+    await asyncio.sleep(seconds)
+
+
+def openai_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    normalized_path = path.lstrip("/")
+    if base.endswith("/v1") and normalized_path.startswith("v1/"):
+        normalized_path = normalized_path[3:]
+    return f"{base}/{normalized_path}"
+
+
+def idle_reference(instance: BackendInstance) -> str:
+    return instance.last_used_at or instance.updated_at or instance.created_at
+
+
+def idle_seconds(instance: BackendInstance) -> float:
+    reference = parse_iso(idle_reference(instance))
+    elapsed = parse_iso(now_iso()) - reference
+    return max(0.0, elapsed.total_seconds())

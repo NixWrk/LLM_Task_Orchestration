@@ -18,6 +18,14 @@ def profile() -> ModelProfile:
         public_host="host.docker.internal",
         docker_extra_args=(),
         runtime_extra_args=(),
+        volume_mounts=(),
+        environment=(),
+        healthcheck_path="/v1/models",
+        startup_timeout_seconds=120,
+        healthcheck_interval_seconds=2,
+        warmup_enabled=True,
+        warmup_prompt="Return exactly: ok",
+        warmup_max_tokens=8,
         estimated_vram_mb=8 * 1024,
         safety_margin_mb=1024,
         min_replicas=1,
@@ -98,6 +106,22 @@ def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
                 "    lifecycle:",
                 "      runtime: vllm",
                 "      artifact: /models/qwen",
+                "      runtime_image: vllm/vllm-openai:latest",
+                "      host_port_start: 8100",
+                "      container_port: 8000",
+                "      public_host: host.docker.internal",
+                "      volumes:",
+                "        - host_path: D:/models/qwen",
+                "          container_path: /models/qwen",
+                "          mode: ro",
+                "      environment:",
+                "        HF_HOME: /cache/hf",
+                "      healthcheck_path: /v1/models",
+                "      startup_timeout_seconds: 30",
+                "      healthcheck_interval_seconds: 1",
+                "      warmup_enabled: true",
+                "      warmup_prompt: 'Return exactly: ok'",
+                "      warmup_max_tokens: 8",
                 "      estimated_vram_gb: 14",
                 "      safety_margin_gb: 2",
                 "      min_replicas: 1",
@@ -114,3 +138,5 @@ def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
     assert profiles["qwen"].estimated_vram_mb == 14 * 1024
     assert profiles["qwen"].safety_margin_mb == 2 * 1024
     assert profiles["qwen"].preferred_gpus == ("gpu0", "gpu1")
+    assert profiles["qwen"].volume_mounts[0].host_path == "D:/models/qwen"
+    assert profiles["qwen"].environment[0].name == "HF_HOME"

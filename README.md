@@ -169,6 +169,10 @@ This gives immediate protection when several internal services call the same loc
 
 The current GPU management layer is intentionally dry-run. It does not start real vLLM/SGLang containers yet, but it does the scheduling work that real runtime adapters will use.
 
+For the external contract other programs should use to request capacity, model startup, GPU constraints, and task-specific limits, see [Resource Request API](docs/RESOURCE_REQUEST_API.md).
+
+For real vLLM container launching, Docker socket deployment, healthcheck/warmup, and idle stop behavior, see [Docker vLLM Runtime Adapter](docs/DOCKER_VLLM_RUNTIME.md).
+
 GPU inventory:
 
 ```powershell
@@ -235,7 +239,44 @@ Real Docker launching is intentionally opt-in:
 LIFECYCLE_DRY_RUN=false
 ```
 
-For real container launching, run lifecycle where the `docker` CLI and Docker socket are available, or adapt the deployment to mount them explicitly.
+For real container launching, the lifecycle image includes the Docker CLI and the compose file mounts `/var/run/docker.sock`. A production vLLM profile should include explicit model volumes and runtime settings:
+
+```yaml
+models:
+  qwen-14b:
+    public_name: qwen-14b
+    backend_model: qwen-14b
+    lifecycle:
+      runtime: vllm
+      artifact: D:/models/qwen-14b
+      runtime_image: vllm/vllm-openai:latest
+      host_port_start: 8100
+      container_port: 8000
+      public_host: host.docker.internal
+      volumes:
+        - host_path: D:/models/qwen-14b
+          container_path: /models/qwen-14b
+          mode: ro
+      environment:
+        HF_HOME: /root/.cache/huggingface
+      runtime_extra_args:
+        - --max-model-len
+        - "8192"
+      healthcheck_path: /v1/models
+      startup_timeout_seconds: 120
+      healthcheck_interval_seconds: 2
+      warmup_enabled: true
+      warmup_prompt: "Return exactly: ok"
+      warmup_max_tokens: 8
+      estimated_vram_gb: 16
+      safety_margin_gb: 2
+      min_replicas: 1
+      max_replicas: 2
+      idle_ttl_seconds: 900
+      preferred_gpus: [gpu0, gpu1]
+```
+
+When `LIFECYCLE_DRY_RUN=false`, lifecycle starts the container, waits for `/v1/models`, sends a warmup chat completion, then marks the backend `ready`. Idle ready instances above `min_replicas` are marked `draining`, stopped with `docker stop`, and then marked `stopped`.
 
 ## Development
 
