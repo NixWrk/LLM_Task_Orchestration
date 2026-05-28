@@ -168,19 +168,33 @@ Run tests:
 python -m pytest
 ```
 
+Integration tests start a fake OpenAI-compatible backend and a real queue proxy on temporary local ports:
+
+```powershell
+python -m pytest tests\integration
+```
+
+You can also start the fake backend through Compose for manual debugging:
+
+```powershell
+docker compose --profile test up -d --build fake-backend
+```
+
 ## Current Scope
 
 Implemented now:
 
 - Phase 1 compose and LiteLLM configuration.
 - Queue proxy for per-model concurrency, queueing, and token budget enforcement.
+- Fake OpenAI-compatible backend for integration tests.
+- Integration tests for non-streaming, streaming, token rejection, queue overflow, queue timeout, and upstream failure.
 - Environment-driven settings.
 - Smoke test scripts.
 - Basic FastAPI healthcheck with Prometheus metrics.
 
 Next phases:
 
+- Backend registry and routing across several backend replicas.
 - Lifecycle controller for model loading, warmup, idle unload, and GPU placement.
-- Backend registry for several model runtimes across several GPUs.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.

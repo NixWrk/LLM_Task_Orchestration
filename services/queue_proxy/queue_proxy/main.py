@@ -8,15 +8,16 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from queue_proxy.limiter import LimiterRegistry, QueueFull, QueueTimeout
 from queue_proxy.metrics import (
+    CONTENT_TYPE_LATEST,
     ERRORS,
     INPUT_TOKENS,
     LATENCY,
     OUTPUT_TOKEN_BUDGET,
     REQUESTS,
+    generate_latest,
     record_snapshot,
 )
 from queue_proxy.policy import (

@@ -32,6 +32,8 @@
 - Prometheus scrape config.
 - Docker Compose для локального запуска.
 - Unit-тесты для limiter и token policy.
+- Fake OpenAI-compatible backend для repeatable integration tests.
+- Integration tests для non-streaming, streaming, token budget rejection, queue overflow, queue timeout и upstream unavailable.
 
 Главный пробел:
 
@@ -301,16 +303,15 @@ Control Plane должен работать циклом reconcile: сравни
 
 ## Рекомендуемый порядок ближайших работ
 
-1. Довести queue proxy до production-safe состояния: streaming, disconnect, request ids, stable errors.
-2. Добавить fake backend и integration tests, чтобы не зависеть от реальной LLM при тестировании.
-3. Сделать backend registry.
-4. Подключить router к registry.
-5. Сделать GPU inventory через `nvidia-smi`.
-6. Сделать lifecycle controller с dry-run режимом.
-7. Добавить первый runtime adapter для Docker vLLM.
-8. Добавить scaling policy на основе queue pressure.
-9. Добавить Grafana dashboards.
-10. Закрыть security/ops контур.
+1. Довести queue proxy до production-safe состояния: disconnect handling, request ids, stable errors.
+2. Сделать backend registry.
+3. Подключить router к registry.
+4. Сделать GPU inventory через `nvidia-smi`.
+5. Сделать lifecycle controller с dry-run режимом.
+6. Добавить первый runtime adapter для Docker vLLM.
+7. Добавить scaling policy на основе queue pressure.
+8. Добавить Grafana dashboards.
+9. Закрыть security/ops контур.
 
 ## Минимальная целевая версия
 

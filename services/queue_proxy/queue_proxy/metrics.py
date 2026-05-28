@@ -1,4 +1,33 @@
-from prometheus_client import Counter, Gauge, Histogram
+from __future__ import annotations
+
+from typing import Any
+
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+except ModuleNotFoundError:
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+    class _NoopMetric:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def labels(self, *_args: Any, **_kwargs: Any) -> _NoopMetric:
+            return self
+
+        def inc(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def set(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def observe(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    Counter = Gauge = Histogram = _NoopMetric
+
+    def generate_latest() -> bytes:
+        return b""
+
 
 REQUESTS = Counter(
     "llm_requests_total",

@@ -18,6 +18,14 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["services/healthcheck", "services/queue_proxy"]
-testpaths = ["services/healthcheck/tests", "services/queue_proxy/tests"]
+pythonpath = [
+  "services/healthcheck",
+  "services/queue_proxy",
+  "services/fake_openai_backend",
+]
+testpaths = [
+  "services/healthcheck/tests",
+  "services/queue_proxy/tests",
+  "tests/integration",
+]
 addopts = "-q"

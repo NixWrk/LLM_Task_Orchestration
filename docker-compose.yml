@@ -98,6 +98,19 @@ services:
     networks:
       - gateway
 
+  fake-backend:
+    profiles:
+      - test
+    build:
+      context: ./services/fake_openai_backend
+    environment:
+      FAKE_OPENAI_MODEL_IDS: ${FAKE_OPENAI_MODEL_IDS:-local-main}
+      FAKE_OPENAI_RESPONSE_TEXT: ${FAKE_OPENAI_RESPONSE_TEXT:-ok}
+    ports:
+      - "18080:18080"
+    networks:
+      - gateway
+
   prometheus:
     image: prom/prometheus:v2.54.1
     command:
