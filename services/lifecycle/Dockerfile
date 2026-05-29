@@ -9,10 +9,11 @@ WORKDIR /app
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
-COPY requirements.txt .
+COPY services/lifecycle/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY lifecycle ./lifecycle
+COPY orchestrator_core ./orchestrator_core
+COPY services/lifecycle/lifecycle ./lifecycle
 
 EXPOSE 4300
 

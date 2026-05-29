@@ -54,7 +54,8 @@ services:
 
   queue-proxy:
     build:
-      context: ./services/queue_proxy
+      context: .
+      dockerfile: services/queue_proxy/Dockerfile
     environment:
       SERVICE_NAME: queue-proxy
       QUEUE_PROXY_CONFIG_PATH: /app/config/orchestrator.yaml
@@ -80,7 +81,8 @@ services:
 
   healthcheck:
     build:
-      context: ./services/healthcheck
+      context: .
+      dockerfile: services/healthcheck/Dockerfile
     environment:
       SERVICE_NAME: healthcheck
       LITELLM_BASE_URL: http://queue-proxy:4100
@@ -106,7 +108,8 @@ services:
 
   gpu-inventory:
     build:
-      context: ./services/gpu_inventory
+      context: .
+      dockerfile: services/gpu_inventory/Dockerfile
     gpus: all
     environment:
       GPU_INVENTORY_NVIDIA_SMI_PATH: ${GPU_INVENTORY_NVIDIA_SMI_PATH:-nvidia-smi}
@@ -120,7 +123,8 @@ services:
 
   lifecycle:
     build:
-      context: ./services/lifecycle
+      context: .
+      dockerfile: services/lifecycle/Dockerfile
     environment:
       LIFECYCLE_CONFIG_PATH: /app/config/orchestrator.yaml
       BACKEND_REGISTRY_PATH: /app/state/backend_registry.json
@@ -148,7 +152,8 @@ services:
     profiles:
       - test
     build:
-      context: ./services/fake_openai_backend
+      context: .
+      dockerfile: services/fake_openai_backend/Dockerfile
     environment:
       FAKE_OPENAI_MODEL_IDS: ${FAKE_OPENAI_MODEL_IDS:-local-main}
       FAKE_OPENAI_RESPONSE_TEXT: ${FAKE_OPENAI_RESPONSE_TEXT:-ok}

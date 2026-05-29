@@ -8,8 +8,14 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from orchestrator_core.logging import configure_json_logging
 
 from queue_proxy.backend_registry import BackendRegistryClient
+from queue_proxy.http_proxy import (
+    response_headers,
+    upstream_headers as build_upstream_headers,
+    upstream_url,
+)
 from queue_proxy.limiter import LimiterRegistry, QueueFull, QueueTimeout
 from queue_proxy.metrics import (
     CONTENT_TYPE_LATEST,
@@ -33,43 +39,8 @@ from queue_proxy.policy import (
 )
 from queue_proxy.settings import Settings
 
-HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "host",
-    "content-length",
-}
-
-
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, separators=(",", ":"))
-
-
-def configure_logging(level: str) -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(level.upper())
-
-
 settings = Settings()
-configure_logging(settings.log_level)
+configure_json_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 policy_registry: PolicyRegistry = load_policy_registry(settings.config_path)
@@ -405,33 +376,8 @@ async def release_backend_lease(instance_id: str | None) -> None:
         logger.warning("backend_registry_release_failed error_type=%s", type(exc).__name__)
 
 
-def upstream_url(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
-    normalized_path = path.lstrip("/")
-    if base.endswith("/v1"):
-        if normalized_path.startswith("v1/"):
-            normalized_path = normalized_path[3:]
-        return f"{base}/{normalized_path}"
-    return f"{base}/v1/{normalized_path}"
-
-
 def upstream_headers(request: Request) -> dict[str, str]:
-    headers = {
-        name: value
-        for name, value in request.headers.items()
-        if name.lower() not in HOP_BY_HOP_HEADERS
-    }
-    if settings.upstream_api_key:
-        headers["authorization"] = f"Bearer {settings.upstream_api_key}"
-    return headers
-
-
-def response_headers(headers: httpx.Headers) -> dict[str, str]:
-    return {
-        name: value
-        for name, value in headers.items()
-        if name.lower() not in HOP_BY_HOP_HEADERS
-    }
+    return build_upstream_headers(request.headers, settings.upstream_api_key)
 
 
 def error_response(status_code: int, error_type: str, message: str) -> JSONResponse:

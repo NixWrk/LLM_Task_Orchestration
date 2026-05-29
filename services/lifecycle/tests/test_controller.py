@@ -2,17 +2,17 @@ from datetime import UTC, datetime, timedelta
 import asyncio
 from pathlib import Path
 
+from lifecycle.allocation import allocation_overrides
 from lifecycle.controller import (
     LifecycleController,
-    allocation_overrides,
-    dynamic_model_allowed,
-    estimate_vram_mb_from_lmstudio_metadata,
     idle_seconds,
-    openai_url,
     should_verify_before_start,
 )
+from lifecycle.dynamic_policy import dynamic_model_allowed
+from lifecycle.lmstudio import estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata
 from lifecycle.models import BackendInstance, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
+from orchestrator_core.openai import openai_url
 
 
 def test_openai_url_does_not_duplicate_v1_prefix() -> None:

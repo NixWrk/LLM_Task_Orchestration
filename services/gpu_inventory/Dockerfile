@@ -5,10 +5,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY services/gpu_inventory/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY gpu_inventory ./gpu_inventory
+COPY orchestrator_core ./orchestrator_core
+COPY services/gpu_inventory/gpu_inventory ./gpu_inventory
 
 EXPOSE 4200
 

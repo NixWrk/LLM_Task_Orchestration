@@ -1,41 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from contextlib import suppress
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from orchestrator_core.logging import configure_json_logging
+from orchestrator_core.prometheus import prom_labels
 
 from lifecycle.controller import LifecycleController, queue_lengths_from_payload
 from lifecycle.registry import BackendRegistry
 from lifecycle.settings import Settings
 
 
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, separators=(",", ":"))
-
-
-def configure_logging(level: str) -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(level.upper())
-
-
 settings = Settings()
-configure_logging(settings.log_level)
+configure_json_logging(settings.log_level)
 registry = BackendRegistry(settings.registry_path)
 controller = LifecycleController(
     config_path=settings.config_path,
@@ -183,17 +163,6 @@ async def metrics() -> Response:
         "\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
-
-
-def prom_labels(**labels: object) -> str:
-    return ",".join(
-        f'{name}="{prom_label_value(value)}"'
-        for name, value in labels.items()
-    )
-
-
-def prom_label_value(value: object) -> str:
-    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 async def periodic_reconcile_loop() -> None:

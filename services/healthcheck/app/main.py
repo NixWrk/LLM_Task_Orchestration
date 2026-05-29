@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from time import perf_counter
 from typing import Any
@@ -8,6 +7,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Response, status
 from fastapi.responses import JSONResponse
+from orchestrator_core.logging import configure_json_logging
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.lmstudio_client import OpenAICompatibleClient
@@ -21,29 +21,8 @@ from app.settings import Settings
 from app.state import DEGRADED, HEALTHY, UNHEALTHY, overall_status
 
 
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, separators=(",", ":"))
-
-
-def configure_logging(level: str) -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(level.upper())
-
-
 settings = Settings()
-configure_logging(settings.log_level)
+configure_json_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="local-llm-gateway healthcheck", version="0.1.0")

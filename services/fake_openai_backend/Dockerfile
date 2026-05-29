@@ -5,10 +5,11 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY services/fake_openai_backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY fake_openai_backend ./fake_openai_backend
+COPY orchestrator_core ./orchestrator_core
+COPY services/fake_openai_backend/fake_openai_backend ./fake_openai_backend
 
 EXPOSE 18080
 

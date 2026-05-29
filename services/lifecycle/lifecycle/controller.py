@@ -1,22 +1,30 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import math
-import subprocess
 from contextlib import suppress
 from dataclasses import replace
-from fnmatch import fnmatchcase
 from time import monotonic
 from typing import Any
 
 import httpx
+from orchestrator_core.openai import openai_url
 
+from lifecycle.allocation import (
+    allocation_has_vram_override,
+    allocation_overrides,
+    queue_lengths_from_payload,
+)
 from lifecycle.adapters import adapter_for
 from lifecycle.config import (
     load_dynamic_model_profile,
     load_dynamic_models_config,
     load_model_profiles,
+)
+from lifecycle.dynamic_policy import dynamic_model_allowed
+from lifecycle.lmstudio import (
+    compact_metadata as compact_lmstudio_metadata,
+    estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata,
+    metadata_for_model as lmstudio_metadata_for_model,
 )
 from lifecycle.models import (
     BackendInstance,
@@ -479,50 +487,6 @@ def instance_id_for(model: str, gpu_id: str, seed: str) -> str:
     return f"{safe_model}-{gpu_id}-{digest}"
 
 
-def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
-    raw = payload.get("queue_lengths", {})
-    if not isinstance(raw, dict):
-        return {}
-    return {str(model): int(length) for model, length in raw.items()}
-
-
-def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
-    orchestration = payload.get("orchestration")
-    if not isinstance(orchestration, dict):
-        orchestration = {}
-
-    lifecycle: dict[str, Any] = {}
-    for source_key, target_key in (
-        ("runtime", "runtime"),
-        ("base_url", "base_url"),
-        ("estimated_vram_gb", "estimated_vram_gb"),
-        ("safety_margin_gb", "safety_margin_gb"),
-        ("preferred_gpus", "preferred_gpus"),
-        ("idle_ttl_seconds", "idle_ttl_seconds"),
-        ("min_replicas", "min_replicas"),
-        ("max_replicas", "max_replicas"),
-        ("warmup_enabled", "warmup_enabled"),
-        ("warmup_prompt", "warmup_prompt"),
-        ("warmup_max_tokens", "warmup_max_tokens"),
-        ("load_strategy", "load_strategy"),
-        ("lms_gpu", "lms_gpu"),
-        ("lms_context_length", "lms_context_length"),
-        ("lms_parallel", "lms_parallel"),
-        ("lms_ttl_seconds", "lms_ttl_seconds"),
-    ):
-        if source_key in orchestration:
-            lifecycle[target_key] = orchestration[source_key]
-
-    if "max_parallel" in orchestration and "lms_parallel" not in lifecycle:
-        lifecycle["lms_parallel"] = orchestration["max_parallel"]
-
-    if "gpu" in orchestration and "preferred_gpus" not in lifecycle:
-        gpu = orchestration["gpu"]
-        lifecycle["preferred_gpus"] = gpu if isinstance(gpu, list) else [gpu]
-
-    return {"lifecycle": lifecycle} if lifecycle else {}
-
-
 def model_ids_from_openai_payload(payload: dict[str, Any]) -> set[str]:
     raw_models = payload.get("data", [])
     if not isinstance(raw_models, list):
@@ -534,112 +498,10 @@ def model_ids_from_openai_payload(payload: dict[str, Any]) -> set[str]:
     }
 
 
-def dynamic_model_allowed(model: str, config: dict[str, Any]) -> bool:
-    if not bool(config.get("enabled", False)):
-        return False
-
-    denied = pattern_list(config, "denied_models", "deny_models", "denied_model_patterns")
-    if any(pattern_matches(model, pattern) for pattern in denied):
-        return False
-
-    allowed = pattern_list(config, "allowed_models", "allow_models", "allowed_model_patterns")
-    if not allowed:
-        return True
-    return any(pattern_matches(model, pattern) for pattern in allowed)
-
-
-def pattern_list(config: dict[str, Any], *keys: str) -> list[str]:
-    values: list[str] = []
-    for key in keys:
-        raw = config.get(key)
-        if isinstance(raw, list):
-            values.extend(str(item) for item in raw)
-        elif raw not in (None, ""):
-            values.append(str(raw))
-    return values
-
-
-def pattern_matches(value: str, pattern: str) -> bool:
-    return value == pattern or fnmatchcase(value, pattern)
-
-
-def allocation_has_vram_override(payload: dict[str, Any]) -> bool:
-    orchestration = payload.get("orchestration")
-    return isinstance(orchestration, dict) and "estimated_vram_gb" in orchestration
-
-
 def should_verify_before_start(profile: ModelProfile) -> bool:
     if profile.runtime != "lmstudio":
         return True
     return profile.load_strategy.lower() in {"none", "api", "external"}
-
-
-def lmstudio_metadata_for_model(model: str, lms_binary: str = "lms") -> dict[str, Any]:
-    try:
-        completed = subprocess.run(
-            [lms_binary, "ls", "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return {}
-
-    try:
-        payload = json.loads(completed.stdout or "[]")
-    except json.JSONDecodeError:
-        return {}
-
-    if not isinstance(payload, list):
-        return {}
-
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        candidates = {
-            str(item.get("modelKey") or ""),
-            str(item.get("selectedVariant") or ""),
-            str(item.get("indexedModelIdentifier") or ""),
-        }
-        variants = item.get("variants")
-        if isinstance(variants, list):
-            candidates.update(str(variant) for variant in variants)
-        if model in candidates:
-            return item
-    return {}
-
-
-def estimate_vram_mb_from_lmstudio_metadata(
-    metadata: dict[str, Any],
-    fallback_mb: int,
-) -> int:
-    raw_size = metadata.get("sizeBytes")
-    if raw_size in (None, ""):
-        return fallback_mb
-
-    size_mb = int(math.ceil(float(raw_size) / (1024 * 1024)))
-    context_length = int(metadata.get("maxContextLength") or 0)
-    context_overhead_mb = min(4096, max(512, math.ceil(context_length / 4096) * 64))
-    return int(math.ceil(size_mb * 1.15)) + context_overhead_mb
-
-
-def compact_lmstudio_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "type",
-        "modelKey",
-        "displayName",
-        "path",
-        "sizeBytes",
-        "paramsString",
-        "architecture",
-        "quantization",
-        "maxContextLength",
-        "vision",
-        "trainedForToolUse",
-        "selectedVariant",
-    )
-    return {key: metadata[key] for key in keys if key in metadata}
 
 
 def idle_ttl_seconds_for(instance: BackendInstance, profile: ModelProfile) -> int:
@@ -658,14 +520,6 @@ async def async_sleep(seconds: float) -> None:
     import asyncio
 
     await asyncio.sleep(seconds)
-
-
-def openai_url(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
-    normalized_path = path.lstrip("/")
-    if base.endswith("/v1") and normalized_path.startswith("v1/"):
-        normalized_path = normalized_path[3:]
-    return f"{base}/{normalized_path}"
 
 
 def idle_reference(instance: BackendInstance) -> str:

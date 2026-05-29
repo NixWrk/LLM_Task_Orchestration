@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = []
+packages = ["orchestrator_core"]
 py-modules = ["llmoctl"]
 
 [tool.pytest.ini_options]
