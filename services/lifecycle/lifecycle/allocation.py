@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
+
+from lifecycle.lmstudio import (
+    compact_metadata as compact_lmstudio_metadata,
+    estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata,
+    metadata_for_model as lmstudio_metadata_for_model,
+)
+from lifecycle.models import ModelProfile
 
 
 def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
@@ -50,3 +58,37 @@ def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
 def allocation_has_vram_override(payload: dict[str, Any]) -> bool:
     orchestration = payload.get("orchestration")
     return isinstance(orchestration, dict) and "estimated_vram_gb" in orchestration
+
+
+def enrich_profile_from_lmstudio_metadata(
+    profile: ModelProfile,
+    dynamic_config: dict[str, Any],
+    allocation_payload: dict[str, Any],
+) -> tuple[ModelProfile, dict[str, Any]]:
+    if profile.runtime != "lmstudio":
+        return profile, {}
+    if allocation_has_vram_override(allocation_payload):
+        return profile, {}
+    if not bool(dynamic_config.get("auto_vram_from_lms", True)):
+        return profile, {}
+
+    metadata = lmstudio_metadata_for_model(
+        profile.backend_model,
+        str(dynamic_config.get("lms_binary") or profile.lms_binary),
+    )
+    if not metadata:
+        return profile, {}
+
+    estimated_vram_mb = estimate_vram_mb_from_lmstudio_metadata(
+        metadata,
+        fallback_mb=profile.estimated_vram_mb,
+    )
+    if estimated_vram_mb <= 0:
+        return profile, {"lmstudio_metadata": metadata}
+    return (
+        replace(profile, estimated_vram_mb=estimated_vram_mb),
+        {
+            "lmstudio_metadata": compact_lmstudio_metadata(metadata),
+            "auto_estimated_vram_mb": estimated_vram_mb,
+        },
+    )

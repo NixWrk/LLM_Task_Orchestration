@@ -1,40 +1,29 @@
 from __future__ import annotations
 
-import hashlib
-from contextlib import suppress
-from dataclasses import replace
-from time import monotonic
 from typing import Any
 
 import httpx
-from orchestrator_core.openai import openai_url
 
 from lifecycle.allocation import (
-    allocation_has_vram_override,
     allocation_overrides,
+    enrich_profile_from_lmstudio_metadata,
     queue_lengths_from_payload,
 )
-from lifecycle.adapters import adapter_for
+from lifecycle.cleanup import CleanupService, idle_seconds
 from lifecycle.config import (
     load_dynamic_model_profile,
     load_dynamic_models_config,
     load_model_profiles,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
-from lifecycle.lmstudio import (
-    compact_metadata as compact_lmstudio_metadata,
-    estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata,
-    metadata_for_model as lmstudio_metadata_for_model,
-)
 from lifecycle.models import (
     BackendInstance,
     GpuState,
     ModelProfile,
     PlacementDecision,
-    now_iso,
-    parse_iso,
 )
 from lifecycle.registry import BackendRegistry
+from lifecycle.runtime import RuntimeLifecycleService, should_verify_before_start
 from lifecycle.scheduler import choose_gpu, desired_replicas
 
 
@@ -55,6 +44,13 @@ class LifecycleController:
         self.dry_run = dry_run
         self.docker_binary = docker_binary
         self.allocation_results: dict[tuple[str, str], int] = {}
+        self.runtime = RuntimeLifecycleService(
+            registry=registry,
+            request_timeout_seconds=request_timeout_seconds,
+            dry_run=dry_run,
+            docker_binary=docker_binary,
+        )
+        self.cleanup_service = CleanupService(registry, self.stop_instance)
 
     def profiles(self) -> dict[str, ModelProfile]:
         return load_model_profiles(self.config_path)
@@ -218,7 +214,7 @@ class LifecycleController:
                 "instance": instance.to_dict(),
             }
 
-        profile, model_metadata = self.enrich_profile_from_lmstudio_metadata(
+        profile, model_metadata = enrich_profile_from_lmstudio_metadata(
             profile,
             dynamic_config,
             payload,
@@ -266,267 +262,52 @@ class LifecycleController:
         decision_payload: dict[str, Any],
         gpu_by_id: dict[str, GpuState],
     ) -> BackendInstance:
-        gpu_id = str(decision_payload["gpu_id"])
-        gpu = gpu_by_id[gpu_id]
-        instance_id = instance_id_for(profile.public_name, gpu_id, now_iso())
-        host_port = self.registry.next_host_port(profile.public_name, profile.host_port_start)
-        reserved_vram_mb = int(decision_payload["required_vram_mb"])
-        adapter = adapter_for(profile, dry_run=self.dry_run, docker_binary=self.docker_binary)
-        instance = adapter.start(
-            profile,
-            gpu_id,
-            gpu.index,
-            host_port,
-            instance_id,
-            reserved_vram_mb,
-        )
-        if instance.dry_run:
-            instance.base_url = f"dry-run://{profile.public_name}/{instance_id}"
-        elif profile.runtime == "vllm":
-            instance.base_url = f"http://{profile.public_host}:{host_port}/v1"
-        instance.metadata.update(
-            {
-                "idle_ttl_seconds": profile.idle_ttl_seconds,
-                "estimated_vram_mb": profile.estimated_vram_mb,
-                "safety_margin_mb": profile.safety_margin_mb,
-            }
-        )
-        return instance
+        return self.runtime.start_instance(profile, decision_payload, gpu_by_id)
 
     async def initialize_instance(
         self,
         profile: ModelProfile,
         instance: BackendInstance,
     ) -> BackendInstance:
-        if instance.dry_run:
-            return self.registry.mark_state(instance.instance_id, "ready")
-
-        try:
-            await self.wait_for_health(profile, instance)
-            if not should_verify_before_start(profile):
-                await self.verify_model_available(profile)
-            self.registry.mark_state(instance.instance_id, "warming")
-            if profile.warmup_enabled:
-                await self.warmup(profile, instance)
-            return self.registry.mark_state(instance.instance_id, "ready")
-        except Exception as exc:
-            with suppress(Exception):
-                adapter_for(
-                    profile,
-                    dry_run=instance.dry_run or self.dry_run,
-                    docker_binary=self.docker_binary,
-                ).stop(instance)
-            return self.registry.mark_failed(instance.instance_id, type(exc).__name__)
+        return await self.runtime.initialize_instance(profile, instance)
 
     async def wait_for_health(
         self,
         profile: ModelProfile,
         instance: BackendInstance,
     ) -> None:
-        deadline = monotonic() + profile.startup_timeout_seconds
-        last_error: Exception | None = None
-        while monotonic() < deadline:
-            try:
-                async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-                    response = await client.get(openai_url(instance.base_url, profile.healthcheck_path))
-                    if 200 <= response.status_code < 300:
-                        return
-            except httpx.HTTPError as exc:
-                last_error = exc
-            await async_sleep(profile.healthcheck_interval_seconds)
-        if last_error:
-            raise last_error
-        raise TimeoutError(f"Backend {instance.instance_id} did not become healthy.")
+        await self.runtime.wait_for_health(profile, instance)
 
     async def warmup(self, profile: ModelProfile, instance: BackendInstance) -> None:
-        payload = {
-            "model": profile.backend_model,
-            "messages": [{"role": "user", "content": profile.warmup_prompt}],
-            "temperature": 0,
-            "max_tokens": profile.warmup_max_tokens,
-        }
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-            response = await client.post(
-                openai_url(instance.base_url, "/chat/completions"),
-                json=payload,
-            )
-            response.raise_for_status()
+        await self.runtime.warmup(profile, instance)
 
     async def verify_model_available(self, profile: ModelProfile) -> None:
-        if profile.runtime not in {"lmstudio", "openai-compatible", "external"}:
-            return
-        if not profile.base_url:
-            raise ValueError(f"Model {profile.public_name} has no base_url.")
-
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-            response = await client.get(openai_url(profile.base_url, "/v1/models"))
-            response.raise_for_status()
-            payload = response.json()
-
-        model_ids = model_ids_from_openai_payload(payload)
-        if profile.backend_model not in model_ids:
-            raise LookupError(f"Model {profile.backend_model} is not visible at {profile.base_url}.")
+        await self.runtime.verify_model_available(profile)
 
     async def list_openai_model_ids(self, base_url: str) -> list[str]:
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-            response = await client.get(openai_url(base_url, "/v1/models"))
-            response.raise_for_status()
-            payload = response.json()
-
-        return sorted(model_ids_from_openai_payload(payload))
-
-    def enrich_profile_from_lmstudio_metadata(
-        self,
-        profile: ModelProfile,
-        dynamic_config: dict[str, Any],
-        allocation_payload: dict[str, Any],
-    ) -> tuple[ModelProfile, dict[str, Any]]:
-        if profile.runtime != "lmstudio":
-            return profile, {}
-        if allocation_has_vram_override(allocation_payload):
-            return profile, {}
-        if not bool(dynamic_config.get("auto_vram_from_lms", True)):
-            return profile, {}
-
-        metadata = lmstudio_metadata_for_model(
-            profile.backend_model,
-            str(dynamic_config.get("lms_binary") or profile.lms_binary),
-        )
-        if not metadata:
-            return profile, {}
-
-        estimated_vram_mb = estimate_vram_mb_from_lmstudio_metadata(
-            metadata,
-            fallback_mb=profile.estimated_vram_mb,
-        )
-        if estimated_vram_mb <= 0:
-            return profile, {"lmstudio_metadata": metadata}
-        return (
-            replace(profile, estimated_vram_mb=estimated_vram_mb),
-            {
-                "lmstudio_metadata": compact_lmstudio_metadata(metadata),
-                "auto_estimated_vram_mb": estimated_vram_mb,
-            },
-        )
+        return await self.runtime.list_openai_model_ids(base_url)
 
     async def stop_idle_instances(
         self,
         profiles: dict[str, ModelProfile],
         queue_lengths: dict[str, int],
     ) -> list[dict[str, Any]]:
-        stopped: list[dict[str, Any]] = []
-        for profile in profiles.values():
-            if queue_lengths.get(profile.public_name, 0) > 0:
-                continue
-            ready_instances = self.registry.ready_for_model(profile.public_name)
-            candidates = [
-                instance
-                for instance in ready_instances
-                if instance.active_requests == 0
-                and idle_seconds(instance) >= idle_ttl_seconds_for(instance, profile)
-            ]
-            candidates.sort(key=lambda instance: idle_reference(instance))
-
-            removable_count = max(0, len(ready_instances) - profile.min_replicas)
-            for instance in candidates[:removable_count]:
-                stopped.append(await self.stop_instance(profile, instance))
-        return stopped
+        return await self.cleanup_service.stop_idle_instances(profiles, queue_lengths)
 
     async def cleanup(self, queue_lengths: dict[str, int] | None = None) -> dict[str, Any]:
-        profiles = self.profiles()
-        for instance in self.registry.list():
-            if instance.model not in profiles and instance.state == "ready":
-                profile = self.profile_for_model(instance.model)
-                if profile is not None:
-                    profiles[profile.public_name] = profile
-        dynamic_config = load_dynamic_models_config(self.config_path)
-        stopped = await self.stop_idle_instances(profiles, queue_lengths or {})
-        removed = self.purge_stale_instances(registry_cleanup_ttl_seconds(dynamic_config))
-        return {
-            "stopped_instances": stopped,
-            "removed_instances": removed,
-            "remaining_instances": [instance.to_dict() for instance in self.registry.list()],
-        }
+        return await self.cleanup_service.cleanup(
+            profiles=self.profiles(),
+            queue_lengths=queue_lengths or {},
+            dynamic_config=load_dynamic_models_config(self.config_path),
+            profile_for_model=self.profile_for_model,
+        )
 
     def purge_stale_instances(self, ttl_seconds: int) -> list[dict[str, Any]]:
-        if ttl_seconds < 0:
-            return []
-        removed: list[dict[str, Any]] = []
-        for instance in list(self.registry.list()):
-            if instance.runtime != "lmstudio" or instance.state not in {"stopped", "failed"}:
-                continue
-            if idle_seconds(instance) < ttl_seconds:
-                continue
-            removed.append(instance.to_dict())
-            self.registry.remove(instance.instance_id)
-        return removed
+        return self.cleanup_service.purge_stale_instances(ttl_seconds)
 
     async def stop_instance(
         self,
         profile: ModelProfile,
         instance: BackendInstance,
     ) -> dict[str, Any]:
-        self.registry.mark_state(instance.instance_id, "draining")
-        try:
-            adapter = adapter_for(
-                profile,
-                dry_run=instance.dry_run or self.dry_run,
-                docker_binary=self.docker_binary,
-            )
-            adapter.stop(instance)
-            stopped = self.registry.mark_state(instance.instance_id, "stopped")
-            return stopped.to_dict()
-        except Exception as exc:
-            failed = self.registry.mark_failed(instance.instance_id, type(exc).__name__)
-            return failed.to_dict()
-
-
-def instance_id_for(model: str, gpu_id: str, seed: str) -> str:
-    digest = hashlib.sha1(f"{model}:{gpu_id}:{seed}".encode("utf-8")).hexdigest()[:8]
-    safe_model = model.replace("/", "-").replace(":", "-")
-    return f"{safe_model}-{gpu_id}-{digest}"
-
-
-def model_ids_from_openai_payload(payload: dict[str, Any]) -> set[str]:
-    raw_models = payload.get("data", [])
-    if not isinstance(raw_models, list):
-        return set()
-    return {
-        str(item.get("id"))
-        for item in raw_models
-        if isinstance(item, dict) and item.get("id") is not None
-    }
-
-
-def should_verify_before_start(profile: ModelProfile) -> bool:
-    if profile.runtime != "lmstudio":
-        return True
-    return profile.load_strategy.lower() in {"none", "api", "external"}
-
-
-def idle_ttl_seconds_for(instance: BackendInstance, profile: ModelProfile) -> int:
-    raw_value = instance.metadata.get("idle_ttl_seconds")
-    if raw_value in (None, ""):
-        return profile.idle_ttl_seconds
-    return int(raw_value)
-
-
-def registry_cleanup_ttl_seconds(config: dict[str, Any]) -> int:
-    raw_value = config.get("registry_cleanup_ttl_seconds", 3600)
-    return int(raw_value)
-
-
-async def async_sleep(seconds: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
-
-
-def idle_reference(instance: BackendInstance) -> str:
-    return instance.last_used_at or instance.updated_at or instance.created_at
-
-
-def idle_seconds(instance: BackendInstance) -> float:
-    reference = parse_iso(idle_reference(instance))
-    elapsed = parse_iso(now_iso()) - reference
-    return max(0.0, elapsed.total_seconds())
+        return await self.runtime.stop_instance(profile, instance)

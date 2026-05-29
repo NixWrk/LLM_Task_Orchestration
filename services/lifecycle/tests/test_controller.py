@@ -2,16 +2,16 @@ from datetime import UTC, datetime, timedelta
 import asyncio
 from pathlib import Path
 
-from lifecycle.allocation import allocation_overrides
+from lifecycle.allocation import allocation_overrides, enrich_profile_from_lmstudio_metadata
 from lifecycle.controller import (
     LifecycleController,
     idle_seconds,
-    should_verify_before_start,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
 from lifecycle.lmstudio import estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata
 from lifecycle.models import BackendInstance, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
+from lifecycle.runtime import RuntimeLifecycleService, should_verify_before_start
 from orchestrator_core.openai import openai_url
 
 
@@ -178,6 +178,26 @@ def test_estimate_vram_from_lmstudio_metadata_can_replace_large_fallback() -> No
     assert estimate > 512
 
 
+def test_lmstudio_metadata_enrichment_replaces_profile_vram(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lifecycle.allocation.lmstudio_metadata_for_model",
+        lambda _model, _binary: {
+            "modelKey": "qwen",
+            "sizeBytes": 512 * 1024 * 1024,
+            "maxContextLength": 8192,
+        },
+    )
+
+    enriched, metadata = enrich_profile_from_lmstudio_metadata(
+        lmstudio_profile(),
+        {"auto_vram_from_lms": True, "lms_binary": "lms"},
+        {"model": "qwen"},
+    )
+
+    assert enriched.estimated_vram_mb < 8 * 1024
+    assert metadata["auto_estimated_vram_mb"] == enriched.estimated_vram_mb
+
+
 def test_lmstudio_cli_load_strategy_skips_pre_start_openai_check() -> None:
     profile = lmstudio_profile(load_strategy="cli-if-available")
 
@@ -188,8 +208,6 @@ def test_lmstudio_cli_load_strategy_skips_pre_start_openai_check() -> None:
 
 
 def test_initialize_failure_stops_loaded_lmstudio_instance(tmp_path: Path, monkeypatch) -> None:
-    config_path = tmp_path / "orchestrator.yaml"
-    config_path.write_text("dynamic_models:\n  enabled: true\n", encoding="utf-8")
     registry = BackendRegistry(str(tmp_path / "registry.json"))
     instance = BackendInstance(
         instance_id="lmstudio-1",
@@ -204,10 +222,8 @@ def test_initialize_failure_stops_loaded_lmstudio_instance(tmp_path: Path, monke
         metadata={"lmstudio_loaded_with_lms": True},
     )
     registry.upsert(instance)
-    controller = LifecycleController(
-        config_path=str(config_path),
+    runtime = RuntimeLifecycleService(
         registry=registry,
-        gpu_inventory_url="http://gpu-inventory:4200",
         request_timeout_seconds=1,
         dry_run=False,
     )
@@ -220,13 +236,13 @@ def test_initialize_failure_stops_loaded_lmstudio_instance(tmp_path: Path, monke
         def stop(self, stopped_instance: BackendInstance) -> None:
             stop_calls.append(stopped_instance.instance_id)
 
-    monkeypatch.setattr(controller, "wait_for_health", fake_wait_for_health)
+    monkeypatch.setattr(runtime, "wait_for_health", fake_wait_for_health)
     monkeypatch.setattr(
-        "lifecycle.controller.adapter_for",
+        "lifecycle.runtime.adapter_for",
         lambda *_args, **_kwargs: FakeAdapter(),
     )
 
-    failed = asyncio.run(controller.initialize_instance(lmstudio_profile(), instance))
+    failed = asyncio.run(runtime.initialize_instance(lmstudio_profile(), instance))
 
     assert failed.state == "failed"
     assert stop_calls == ["lmstudio-1"]
