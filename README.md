@@ -46,9 +46,12 @@ LiteLLM is still published on `:4000` for debugging, but internal services shoul
 ## Prerequisites
 
 - Docker Desktop or Docker Engine with Compose.
+- NVIDIA Container Toolkit / Docker GPU passthrough for real vLLM GPU serving.
 - LM Studio installed.
 - A local model downloaded in LM Studio.
 - Optional: LM Studio CLI `lms`.
+
+For a repeatable local preparation run that installs Python dependencies, pulls Docker images, builds services, runs tests, and verifies GPU passthrough, see [Real Run Preparation](docs/REAL_RUN_PREP.md).
 
 ## Configure LM Studio
 
@@ -167,7 +170,7 @@ This gives immediate protection when several internal services call the same loc
 
 ## GPU Control Plane
 
-The current GPU management layer is intentionally dry-run. It does not start real vLLM/SGLang containers yet, but it does the scheduling work that real runtime adapters will use.
+The GPU management layer can run in either dry-run or real Docker mode. Dry-run mode is the default and records planned backend instances without starting containers. Real Docker mode is enabled with `LIFECYCLE_DRY_RUN=false` and uses the Docker vLLM adapter.
 
 For the external contract other programs should use to request capacity, model startup, GPU constraints, and task-specific limits, see [Resource Request API](docs/RESOURCE_REQUEST_API.md).
 
@@ -319,13 +322,15 @@ Implemented now:
 - Registry-aware queue proxy routing.
 - Active request lease/release accounting between queue proxy and lifecycle registry.
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
+- Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.
+- Real-run preparation script and documentation.
 - Environment-driven settings.
 - Smoke test scripts.
 - Basic FastAPI healthcheck with Prometheus metrics.
 
 Next phases:
 
-- Runtime adapters that actually start/stop vLLM/SGLang/LM Studio backends.
-- Idle draining and stop logic for backend instances.
+- A concrete real model profile for the server's selected local model weights.
+- Optional SGLang/LM Studio runtime adapters.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.

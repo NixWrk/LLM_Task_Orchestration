@@ -107,6 +107,7 @@ services:
   gpu-inventory:
     build:
       context: ./services/gpu_inventory
+    gpus: all
     environment:
       GPU_INVENTORY_NVIDIA_SMI_PATH: ${GPU_INVENTORY_NVIDIA_SMI_PATH:-nvidia-smi}
       GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON: ${GPU_INVENTORY_FAKE_GPU_INVENTORY_JSON:-}
