@@ -255,7 +255,7 @@ def test_queue_proxy_routes_through_backend_registry(
     registry_port = unused_tcp_port_factory()
     proxy_port = unused_tcp_port_factory()
     unused_static_upstream_port = unused_tcp_port_factory()
-    config_path = write_policy_config(tmp_path)
+    config_path = write_policy_config(tmp_path, backend_model="actual-main")
 
     with running_fake_backend(fake_port), running_fake_registry(
         registry_port,
@@ -281,6 +281,7 @@ def test_queue_proxy_routes_through_backend_registry(
         )
 
     assert response.status_code == 200
+    assert response.json()["model"] == "actual-main"
     assert response.json()["choices"][0]["message"]["content"] == "ok"
     assert registry_response.json()["instances"][0]["active_requests"] == 0
 
@@ -402,6 +403,7 @@ def write_policy_config(
     max_input_tokens: int = 128,
     max_output_tokens: int = 32,
     max_total_tokens: int = 256,
+    backend_model: str = "local-main",
 ) -> Path:
     config_path = tmp_path / "orchestrator.yaml"
     config_path.write_text(
@@ -420,7 +422,7 @@ def write_policy_config(
                 "models:",
                 "  local-main:",
                 "    public_name: local-main",
-                "    backend_model: local-main",
+                f"    backend_model: {backend_model}",
                 "    aliases:",
                 "      - local-main",
             ]

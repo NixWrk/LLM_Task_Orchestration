@@ -1,0 +1,120 @@
+# LM Studio Models
+
+LM Studio is the fastest way to use the models that are already downloaded on this host. The orchestrator treats LM Studio as a private OpenAI-compatible backend.
+
+## Start LM Studio
+
+Start the local server on port `1234` from the LM Studio app, or with the CLI:
+
+```powershell
+lms server start --port 1234
+```
+
+Check status:
+
+```powershell
+lms server status
+```
+
+If the CLI prints `Timed out waiting for LM Studio daemon to start`, open the LM Studio desktop app once and enable the local server from the Developer/API panel. After the app is running, repeat `lms server status` or the discovery command.
+
+The Docker services reach the host LM Studio server through:
+
+```text
+http://host.docker.internal:1234/v1
+```
+
+From the host itself, the equivalent URL is:
+
+```text
+http://localhost:1234/v1
+```
+
+## Discover Downloaded Models
+
+Use the discovery script:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\discover_lmstudio_models.ps1
+```
+
+It tries three sources:
+
+- LM Studio OpenAI-compatible `/v1/models`.
+- `lms ls --json`.
+- Common LM Studio model folders such as `%USERPROFILE%\.lmstudio\models`.
+
+To save a machine-readable inventory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\discover_lmstudio_models.ps1 `
+  -OutputPath .\data\lmstudio-models.json
+```
+
+If LM Studio stores models outside the default folders:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\discover_lmstudio_models.ps1 `
+  -ModelRoots "D:\LMStudio\Models","E:\Models"
+```
+
+## Configure One LM Studio Model
+
+Set `.env` to the model identifier you load in LM Studio:
+
+```text
+LMSTUDIO_MODEL_ID=<lmstudio-model-id>
+LITELLM_MODEL=openai/<lmstudio-model-id>
+PUBLIC_MODEL_NAME=local-main
+```
+
+Keep `config/litellm.config.yaml` as the LiteLLM bridge to LM Studio. Then set the public model in `config/orchestrator.yaml`:
+
+```yaml
+models:
+  local-main:
+    public_name: local-main
+    backend_model: <lmstudio-model-id>
+    aliases:
+      - local-main
+      - <lmstudio-model-id>
+    max_active_requests: 1
+    max_queued_requests: 16
+    queue_timeout_seconds: 30
+    lifecycle:
+      runtime: lmstudio
+      base_url: http://host.docker.internal:1234/v1
+      estimated_vram_gb: 8
+      safety_margin_gb: 1
+      min_replicas: 1
+      max_replicas: 1
+      idle_ttl_seconds: 3600
+      preferred_gpus:
+        - auto
+```
+
+`runtime: lmstudio` does not start a container. Lifecycle registers the already running LM Studio server, waits for `/v1/models`, sends a warmup request, then marks the backend `ready`.
+
+## Route Through The Registry
+
+For direct routing to ready LM Studio/vLLM backends:
+
+```text
+ENABLE_BACKEND_REGISTRY_ROUTING=true
+```
+
+With fallback enabled, queue proxy uses LiteLLM when lifecycle has no ready backend. To require lifecycle readiness:
+
+```text
+REQUIRE_BACKEND_REGISTRY_BACKEND=true
+```
+
+## Multiple Downloaded Models
+
+Add one `models.<name>` block per public model in `config/orchestrator.yaml`. Use conservative limits per model:
+
+- Smaller 7B/8B quantized GGUF models: start with `estimated_vram_gb: 6` to `10`.
+- Medium 14B quantized GGUF models: start with `estimated_vram_gb: 12` to `18`.
+- Larger models: reserve enough VRAM for context, KV cache, and batching.
+
+LM Studio itself decides how the model is loaded. The orchestrator controls admission, queues, token budgets, health/warmup, and routing. For hard multi-replica GPU placement, use the Docker vLLM adapter described in [Docker vLLM Runtime Adapter](DOCKER_VLLM_RUNTIME.md).

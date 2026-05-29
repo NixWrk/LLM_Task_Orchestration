@@ -58,6 +58,8 @@ The following images were pulled or built successfully:
 
 The script does not download model weights. The orchestrator needs an explicit local model path because the correct artifact depends on the model you want to serve, storage layout, license, and whether you use Hugging Face cache or a manually downloaded directory.
 
+If the model is already downloaded in LM Studio, you usually do not need a vLLM model path. Start LM Studio, discover the model id with [LM Studio Models](LM_STUDIO_MODELS.md), and use `runtime: lmstudio` with `base_url: http://host.docker.internal:1234/v1`.
+
 For a real vLLM backend, update `config/orchestrator.yaml`:
 
 ```yaml

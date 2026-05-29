@@ -171,6 +171,8 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             )
 
         clean_payload = strip_internal_fields(payload)
+        if backend_instance_id is not None and "model" in clean_payload:
+            clean_payload["model"] = policy.backend_model
         clean_body = json.dumps(clean_payload, separators=(",", ":")).encode("utf-8")
         response = await stream_upstream_response(
             path=path,

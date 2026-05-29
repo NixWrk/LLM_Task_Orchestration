@@ -31,9 +31,10 @@ models:
     max_output_tokens: 1024
     max_total_tokens: 9216
     lifecycle:
-      runtime: external
+      runtime: lmstudio
       artifact: null
       runtime_image: null
+      base_url: http://host.docker.internal:1234/v1
       host_port_start: 8100
       container_port: 8000
       public_host: host.docker.internal

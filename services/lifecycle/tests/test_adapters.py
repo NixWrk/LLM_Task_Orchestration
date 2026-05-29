@@ -1,4 +1,9 @@
-from lifecycle.adapters import DockerVllmAdapter, DryRunAdapter, docker_vllm_command
+from lifecycle.adapters import (
+    DockerVllmAdapter,
+    DryRunAdapter,
+    ExternalOpenAIAdapter,
+    docker_vllm_command,
+)
 from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
 
@@ -12,6 +17,7 @@ def profile() -> ModelProfile:
         host_port_start=8100,
         container_port=8000,
         public_host="host.docker.internal",
+        base_url=None,
         docker_extra_args=("--ipc=host",),
         runtime_extra_args=("--max-model-len", "8192"),
         volume_mounts=(),
@@ -106,3 +112,29 @@ def test_dry_run_adapter_does_not_generate_vllm_command_for_external_runtime() -
     )
 
     assert instance.runtime_command == ["dry-run", "external", "qwen"]
+
+
+def test_external_openai_adapter_uses_configured_base_url() -> None:
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "runtime_image": None,
+            "artifact": None,
+            "base_url": "http://host.docker.internal:1234/v1",
+        }
+    )
+
+    instance = ExternalOpenAIAdapter().start(
+        external,
+        gpu_id="gpu0",
+        gpu_index=0,
+        host_port=8100,
+        instance_id="lmstudio-1",
+        reserved_vram_mb=16 * 1024,
+    )
+
+    assert instance.base_url == "http://host.docker.internal:1234/v1"
+    assert instance.state == "starting"
+    assert instance.dry_run is False
+    assert instance.runtime_command == ["external-openai", "http://host.docker.internal:1234/v1"]

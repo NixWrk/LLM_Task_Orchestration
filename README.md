@@ -53,6 +53,8 @@ LiteLLM is still published on `:4000` for debugging, but internal services shoul
 
 For a repeatable local preparation run that installs Python dependencies, pulls Docker images, builds services, runs tests, and verifies GPU passthrough, see [Real Run Preparation](docs/REAL_RUN_PREP.md).
 
+If you already have models downloaded in LM Studio, use [LM Studio Models](docs/LM_STUDIO_MODELS.md) to discover model ids and map them into the orchestrator.
+
 ## Configure LM Studio
 
 Start the LM Studio server on port `1234`.
@@ -68,6 +70,12 @@ lms load <model-key> --identifier local-main
 ```
 
 Use the model identifier you load as `LMSTUDIO_MODEL_ID`.
+
+To discover already downloaded models:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\discover_lmstudio_models.ps1
+```
 
 ## Configure This Orchestrator
 
@@ -322,6 +330,7 @@ Implemented now:
 - Registry-aware queue proxy routing.
 - Active request lease/release accounting between queue proxy and lifecycle registry.
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
+- Lifecycle support for already-running LM Studio/OpenAI-compatible backends.
 - Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.
 - Real-run preparation script and documentation.
 - Environment-driven settings.
@@ -331,6 +340,6 @@ Implemented now:
 Next phases:
 
 - A concrete real model profile for the server's selected local model weights.
-- Optional SGLang/LM Studio runtime adapters.
+- Optional SGLang runtime adapter.
 - Compatibility tests for streaming, Responses API, timeouts, and backend failures.
 - Reverse proxy and TLS for controlled non-local access.

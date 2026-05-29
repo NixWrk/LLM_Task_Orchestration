@@ -40,6 +40,7 @@ def load_model_profiles(path: str) -> dict[str, ModelProfile]:
             host_port_start=int(lifecycle_data.get("host_port_start", 8100)),
             container_port=int(lifecycle_data.get("container_port", 8000)),
             public_host=str(lifecycle_data.get("public_host", "host.docker.internal")),
+            base_url=optional_str(lifecycle_data.get("base_url", model_data.get("base_url"))),
             docker_extra_args=string_tuple(lifecycle_data.get("docker_extra_args", [])),
             runtime_extra_args=string_tuple(lifecycle_data.get("runtime_extra_args", [])),
             volume_mounts=volume_mounts(lifecycle_data.get("volumes", [])),

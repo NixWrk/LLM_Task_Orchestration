@@ -16,6 +16,7 @@ def profile() -> ModelProfile:
         host_port_start=8100,
         container_port=8000,
         public_host="host.docker.internal",
+        base_url=None,
         docker_extra_args=(),
         runtime_extra_args=(),
         volume_mounts=(),
@@ -110,6 +111,7 @@ def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
                 "      host_port_start: 8100",
                 "      container_port: 8000",
                 "      public_host: host.docker.internal",
+                "      base_url: http://host.docker.internal:1234/v1",
                 "      volumes:",
                 "        - host_path: D:/models/qwen",
                 "          container_path: /models/qwen",
@@ -138,5 +140,6 @@ def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
     assert profiles["qwen"].estimated_vram_mb == 14 * 1024
     assert profiles["qwen"].safety_margin_mb == 2 * 1024
     assert profiles["qwen"].preferred_gpus == ("gpu0", "gpu1")
+    assert profiles["qwen"].base_url == "http://host.docker.internal:1234/v1"
     assert profiles["qwen"].volume_mounts[0].host_path == "D:/models/qwen"
     assert profiles["qwen"].environment[0].name == "HF_HOME"

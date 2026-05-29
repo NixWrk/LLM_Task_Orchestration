@@ -37,6 +37,7 @@ class ModelProfile:
     host_port_start: int
     container_port: int
     public_host: str
+    base_url: str | None
     docker_extra_args: tuple[str, ...]
     runtime_extra_args: tuple[str, ...]
     volume_mounts: tuple[VolumeMount, ...]

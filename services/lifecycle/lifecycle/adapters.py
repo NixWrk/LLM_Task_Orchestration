@@ -103,11 +103,47 @@ class DockerVllmAdapter:
         )
 
 
+class ExternalOpenAIAdapter:
+    def start(
+        self,
+        profile: ModelProfile,
+        gpu_id: str,
+        gpu_index: int,
+        host_port: int,
+        instance_id: str,
+        reserved_vram_mb: int,
+    ) -> BackendInstance:
+        if not profile.base_url:
+            raise ValueError(
+                f"Model {profile.public_name} uses runtime {profile.runtime} but has no lifecycle.base_url"
+            )
+
+        return BackendInstance(
+            instance_id=instance_id,
+            model=profile.public_name,
+            backend_model=profile.backend_model,
+            runtime=profile.runtime,
+            base_url=profile.base_url,
+            gpu_ids=[gpu_id],
+            state="starting",
+            reserved_vram_mb=reserved_vram_mb,
+            host_port=host_port,
+            container_name=None,
+            runtime_command=["external-openai", profile.base_url],
+            dry_run=False,
+        )
+
+    def stop(self, _instance: BackendInstance) -> None:
+        return None
+
+
 def adapter_for(profile: ModelProfile, dry_run: bool, docker_binary: str) -> RuntimeAdapter:
     if dry_run:
         return DryRunAdapter()
     if profile.runtime == "vllm":
         return DockerVllmAdapter(docker_binary)
+    if profile.runtime in {"external", "lmstudio", "openai-compatible"}:
+        return ExternalOpenAIAdapter()
     return DryRunAdapter()
 
 
