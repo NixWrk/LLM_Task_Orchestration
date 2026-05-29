@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
-import yaml
+from orchestrator_core.config import load_orchestrator_config
 
 
 class PolicyError(Exception):
@@ -72,17 +71,11 @@ class PolicyRegistry:
 
 
 def load_policy_registry(path: str) -> PolicyRegistry:
-    config_path = Path(path)
-    with config_path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
-
-    defaults = raw.get("defaults") or {}
-    dynamic_models = raw.get("dynamic_models") or {}
-    models = raw.get("models") or {}
+    config = load_orchestrator_config(path)
     policies: dict[str, ModelPolicy] = {}
 
-    for model_key, model_config in models.items():
-        model_data = {**defaults, **(model_config or {})}
+    for model_key, model_config in config.models.items():
+        model_data = {**config.defaults, **(model_config or {})}
         policy = model_policy_from_data(model_key, model_data)
         policies[policy.public_name] = policy
 
@@ -91,28 +84,30 @@ def load_policy_registry(path: str) -> PolicyRegistry:
             public_name="default",
             backend_model="default",
             aliases=(),
-            max_active_requests=int(defaults.get("max_active_requests", 1)),
-            max_queued_requests=int(defaults.get("max_queued_requests", 16)),
-            queue_timeout_seconds=float(defaults.get("queue_timeout_seconds", 30)),
-            default_max_output_tokens=int(defaults.get("default_max_output_tokens", 512)),
-            max_input_tokens=int(defaults.get("max_input_tokens", 8192)),
-            max_output_tokens=int(defaults.get("max_output_tokens", 1024)),
-            max_total_tokens=int(defaults.get("max_total_tokens", 9216)),
+            max_active_requests=int(config.defaults.get("max_active_requests", 1)),
+            max_queued_requests=int(config.defaults.get("max_queued_requests", 16)),
+            queue_timeout_seconds=float(config.defaults.get("queue_timeout_seconds", 30)),
+            default_max_output_tokens=int(
+                config.defaults.get("default_max_output_tokens", 512)
+            ),
+            max_input_tokens=int(config.defaults.get("max_input_tokens", 8192)),
+            max_output_tokens=int(config.defaults.get("max_output_tokens", 1024)),
+            max_total_tokens=int(config.defaults.get("max_total_tokens", 9216)),
             token_estimate_chars_per_token=float(
-                defaults.get("token_estimate_chars_per_token", 4)
+                config.defaults.get("token_estimate_chars_per_token", 4)
             ),
         )
         return PolicyRegistry(
             {"default": default_policy},
             default_policy,
-            dynamic_models_enabled=bool(dynamic_models.get("enabled", False)),
+            dynamic_models_enabled=bool(config.dynamic_models.get("enabled", False)),
         )
 
-    default_policy = model_policy_from_data("default", defaults)
+    default_policy = model_policy_from_data("default", config.defaults)
     return PolicyRegistry(
         policies,
         default_policy,
-        dynamic_models_enabled=bool(dynamic_models.get("enabled", False)),
+        dynamic_models_enabled=bool(config.dynamic_models.get("enabled", False)),
     )
 
 

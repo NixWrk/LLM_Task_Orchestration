@@ -7,15 +7,11 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, Response, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from orchestrator_core.logging import configure_json_logging
 
 from queue_proxy.backend_registry import BackendRegistryClient
-from queue_proxy.http_proxy import (
-    response_headers,
-    upstream_headers as build_upstream_headers,
-    upstream_url,
-)
+from queue_proxy.forwarder import UpstreamForwarder
 from queue_proxy.limiter import LimiterRegistry, QueueFull, QueueTimeout
 from queue_proxy.metrics import (
     CONTENT_TYPE_LATEST,
@@ -29,27 +25,29 @@ from queue_proxy.metrics import (
 )
 from queue_proxy.policy import (
     PolicyError,
-    PolicyRegistry,
-    ModelPolicy,
-    apply_orchestration_overrides,
-    apply_token_policy,
     extract_model,
     load_policy_registry,
     strip_internal_fields,
 )
+from queue_proxy.request_preparation import RequestPreparationService
+from queue_proxy.responses import error_response
+from queue_proxy.routing import BackendResolver
 from queue_proxy.settings import Settings
 
 settings = Settings()
 configure_json_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-policy_registry: PolicyRegistry = load_policy_registry(settings.config_path)
+policy_registry = load_policy_registry(settings.config_path)
 limiter_registry = LimiterRegistry()
 backend_registry_client = (
     BackendRegistryClient(settings.backend_registry_url, settings.request_timeout_seconds)
     if settings.backend_registry_url
     else None
 )
+request_preparer = RequestPreparationService(policy_registry)
+backend_resolver = BackendResolver(settings, backend_registry_client, logger)
+forwarder = UpstreamForwarder(settings.request_timeout_seconds, settings.upstream_api_key)
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 
 
@@ -95,10 +93,20 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             return auth_result
 
     body = await request.body()
-    payload, policy_metadata, effective_policy = prepare_payload(path, request, body)
+    payload, policy_metadata, effective_policy = request_preparer.prepare(
+        path,
+        request.method,
+        request.headers,
+        body,
+    )
 
     if payload is None:
-        return await forward_without_limiter(path, request, body)
+        return await forwarder.forward_without_limiter(
+            path,
+            request,
+            body,
+            settings.upstream_base_url,
+        )
 
     policy = effective_policy or policy_registry.resolve(extract_model(payload))
     limiter = limiter_registry.get_or_create(
@@ -134,7 +142,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
     try:
         orchestration = payload.get("orchestration")
         orchestration_payload = orchestration if isinstance(orchestration, dict) else None
-        upstream_base_url, backend_instance_id = await resolve_upstream(
+        upstream_base_url, backend_instance_id = await backend_resolver.resolve(
             policy.public_name,
             orchestration_payload,
         )
@@ -152,16 +160,19 @@ async def forward_openai_path(path: str, request: Request) -> Response:
         if backend_instance_id is not None and "model" in clean_payload:
             clean_payload["model"] = policy.backend_model
         clean_body = json.dumps(clean_payload, separators=(",", ":")).encode("utf-8")
-        response = await stream_upstream_response(
+        response = await forwarder.stream_response(
             path=path,
             request=request,
             body=clean_body,
-            model=policy.public_name,
-            endpoint=endpoint,
-            limiter=limiter,
-            started_at=started_at,
             upstream_base_url=upstream_base_url,
-            backend_instance_id=backend_instance_id,
+            on_finished=lambda status_code: finish_upstream_response(
+                backend_instance_id,
+                limiter,
+                policy.public_name,
+                endpoint,
+                status_code,
+                started_at,
+            ),
         )
 
         if policy_metadata:
@@ -176,7 +187,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
 
         return response
     except httpx.HTTPError as exc:
-        await release_backend_lease(backend_instance_id)
+        await backend_resolver.release(backend_instance_id)
         await limiter.release()
         record_limiter_snapshot(limiter)
         ERRORS.labels(model=policy.public_name, error_type=type(exc).__name__).inc()
@@ -204,192 +215,23 @@ def validate_proxy_auth(request: Request) -> JSONResponse | None:
     return None
 
 
-def prepare_payload(
-    path: str,
-    request: Request,
-    body: bytes,
-) -> tuple[dict[str, Any] | None, dict[str, Any], ModelPolicy | None]:
-    if request.method.upper() != "POST":
-        return None, {}, None
-
-    content_type = request.headers.get("content-type", "")
-    if "application/json" not in content_type:
-        return None, {}, None
-
-    if not is_llm_generation_endpoint(path):
-        return None, {}, None
-
-    try:
-        raw_payload = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise PolicyError(f"Invalid JSON request body: {exc.msg}", "invalid_json") from exc
-
-    if not isinstance(raw_payload, dict):
-        raise PolicyError("JSON request body must be an object.", "invalid_json")
-
-    policy = policy_registry.resolve(extract_model(raw_payload))
-    policy = apply_orchestration_overrides(policy, raw_payload.get("orchestration"))
-    payload = apply_token_policy(raw_payload, policy)
-    metadata = dict(payload.get("_orchestrator") or {})
-    return payload, metadata, policy
-
-
-def is_llm_generation_endpoint(path: str) -> bool:
-    normalized = path.strip("/")
-    return normalized in {
-        "chat/completions",
-        "responses",
-        "completions",
-        "embeddings",
-    }
-
-
-async def forward_without_limiter(path: str, request: Request, body: bytes) -> Response:
-    try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            upstream_response = await client.request(
-                request.method,
-                upstream_url(settings.upstream_base_url, path),
-                headers=upstream_headers(request),
-                content=body,
-                params=request.query_params,
-            )
-    except httpx.HTTPError:
-        return error_response(
-            status.HTTP_502_BAD_GATEWAY,
-            "upstream_request_failed",
-            "Upstream LLM gateway request failed.",
-        )
-
-    return Response(
-        content=upstream_response.content,
-        status_code=upstream_response.status_code,
-        headers=response_headers(upstream_response.headers),
-        media_type=upstream_response.headers.get("content-type"),
-    )
-
-
-async def stream_upstream_response(
-    path: str,
-    request: Request,
-    body: bytes,
+async def finish_upstream_response(
+    backend_instance_id: str | None,
+    limiter: Any,
     model: str,
     endpoint: str,
-    limiter: Any,
+    status_code: int,
     started_at: float,
-    upstream_base_url: str,
-    backend_instance_id: str | None,
-) -> StreamingResponse:
-    client = httpx.AsyncClient(timeout=settings.request_timeout_seconds)
-    upstream_request = client.build_request(
-        request.method,
-        upstream_url(upstream_base_url, path),
-        headers=upstream_headers(request),
-        content=body,
-        params=request.query_params,
-    )
-    upstream_response = await client.send(upstream_request, stream=True)
-
-    async def response_body() -> Any:
-        try:
-            async for chunk in upstream_response.aiter_raw():
-                yield chunk
-        finally:
-            await upstream_response.aclose()
-            await client.aclose()
-            await release_backend_lease(backend_instance_id)
-            await limiter.release()
-            record_limiter_snapshot(limiter)
-            REQUESTS.labels(
-                model=model,
-                endpoint=endpoint,
-                status=str(upstream_response.status_code),
-            ).inc()
-            LATENCY.labels(model=model, endpoint=endpoint).observe(
-                perf_counter() - started_at
-            )
-
-    return StreamingResponse(
-        response_body(),
-        status_code=upstream_response.status_code,
-        headers=response_headers(upstream_response.headers),
-        media_type=upstream_response.headers.get("content-type"),
-    )
-
-
-async def resolve_upstream(
-    model: str,
-    orchestration: dict[str, Any] | None = None,
-) -> tuple[str | None, str | None]:
-    if not settings.enable_backend_registry_routing or backend_registry_client is None:
-        return settings.upstream_base_url, None
-
-    try:
-        backend = await backend_registry_client.choose_backend(model)
-    except httpx.HTTPError as exc:
-        logger.warning("backend_registry_lookup_failed error_type=%s", type(exc).__name__)
-        if settings.require_backend_registry_backend:
-            return None, None
-        return settings.upstream_base_url, None
-
-    if backend is None:
-        try:
-            backend = await backend_registry_client.ensure_allocation(model, orchestration)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {403, 404, 409}:
-                return None, None
-            logger.warning(
-                "backend_allocation_failed status=%s",
-                exc.response.status_code,
-            )
-            if settings.require_backend_registry_backend:
-                return None, None
-            return settings.upstream_base_url, None
-        except httpx.HTTPError as exc:
-            logger.warning("backend_allocation_failed error_type=%s", type(exc).__name__)
-            if settings.require_backend_registry_backend:
-                return None, None
-            return settings.upstream_base_url, None
-
-        if backend is None or not backend.is_ready:
-            if settings.require_backend_registry_backend:
-                return None, None
-            return settings.upstream_base_url, None
-
-    try:
-        await backend_registry_client.lease_backend(backend.instance_id)
-    except httpx.HTTPError as exc:
-        logger.warning("backend_registry_lease_failed error_type=%s", type(exc).__name__)
-        if settings.require_backend_registry_backend:
-            return None, None
-        return settings.upstream_base_url, None
-
-    return backend.base_url, backend.instance_id
-
-
-async def release_backend_lease(instance_id: str | None) -> None:
-    if instance_id is None or backend_registry_client is None:
-        return
-    try:
-        await backend_registry_client.release_backend(instance_id)
-    except httpx.HTTPError as exc:
-        logger.warning("backend_registry_release_failed error_type=%s", type(exc).__name__)
-
-
-def upstream_headers(request: Request) -> dict[str, str]:
-    return build_upstream_headers(request.headers, settings.upstream_api_key)
-
-
-def error_response(status_code: int, error_type: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {
-                "type": error_type,
-                "message": message,
-            }
-        },
-    )
+) -> None:
+    await backend_resolver.release(backend_instance_id)
+    await limiter.release()
+    record_limiter_snapshot(limiter)
+    REQUESTS.labels(
+        model=model,
+        endpoint=endpoint,
+        status=str(status_code),
+    ).inc()
+    LATENCY.labels(model=model, endpoint=endpoint).observe(perf_counter() - started_at)
 
 
 def record_limiter_snapshot(limiter: Any) -> None:

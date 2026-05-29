@@ -207,6 +207,8 @@ The implemented dynamic request path is documented in [Dynamic Model Allocation]
 
 For real vLLM container launching, Docker socket deployment, healthcheck/warmup, and idle stop behavior, see [Docker vLLM Runtime Adapter](docs/DOCKER_VLLM_RUNTIME.md).
 
+For the current module boundaries and refactoring map, see [Architecture Notes](docs/ARCHITECTURE.md).
+
 GPU inventory:
 
 ```powershell

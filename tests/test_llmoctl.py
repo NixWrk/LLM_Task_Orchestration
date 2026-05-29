@@ -50,11 +50,12 @@ def test_build_parser_reads_url_defaults_from_environment(monkeypatch) -> None:
 def test_streaming_chat_uses_text_request(monkeypatch) -> None:
     calls = []
 
-    def fake_request_text(method, url, payload=None, api_key=None):
-        calls.append((method, url, payload, api_key))
-        return "data: ok"
+    class FakeClient:
+        def chat(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "data: ok"
 
-    monkeypatch.setattr(llmoctl, "request_text", fake_request_text)
+    monkeypatch.setattr(llmoctl, "client_from_args", lambda _args: FakeClient())
     args = llmoctl.build_parser().parse_args(
         [
             "--queue-url",
@@ -71,6 +72,5 @@ def test_streaming_chat_uses_text_request(monkeypatch) -> None:
     result = llmoctl.cmd_chat(args)
 
     assert result == "data: ok"
-    assert calls[0][1] == "http://queue/v1/chat/completions"
-    assert calls[0][2]["stream"] is True
-    assert calls[0][3] == "sk-test"
+    assert calls[0][0] == ("qwen", "hello")
+    assert calls[0][1]["stream"] is True

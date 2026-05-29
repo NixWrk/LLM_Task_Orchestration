@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from orchestrator_core.config import load_orchestrator_config
 from orchestrator_core.openai import openai_url
 from queue_proxy.http_proxy import upstream_headers, upstream_url
 
@@ -28,3 +31,14 @@ def test_upstream_headers_drop_hop_by_hop_and_apply_api_key() -> None:
         "content-type": "application/json",
         "authorization": "Bearer sk-test",
     }
+
+
+def test_orchestrator_config_normalizes_missing_sections(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text("models:\n  local-main:\n", encoding="utf-8")
+
+    config = load_orchestrator_config(str(config_path))
+
+    assert config.defaults == {}
+    assert config.dynamic_models == {}
+    assert config.models == {"local-main": None}

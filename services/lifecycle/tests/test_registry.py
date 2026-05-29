@@ -2,6 +2,7 @@ from pathlib import Path
 
 from lifecycle.models import BackendInstance
 from lifecycle.registry import BackendRegistry
+from lifecycle.registry_store import JsonFileRegistryStore
 
 
 def test_adjust_active_requests_tracks_leases(tmp_path: Path) -> None:
@@ -30,3 +31,13 @@ def test_adjust_active_requests_tracks_leases(tmp_path: Path) -> None:
     assert leased_last_used_at is not None
     assert released_count == 0
     assert extra_release.active_requests == 0
+
+
+def test_registry_store_saves_json_atomically(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "registry.json"
+    store = JsonFileRegistryStore(path)
+
+    store.save({"instances": [{"instance_id": "backend-1"}]})
+
+    assert store.load()["instances"][0]["instance_id"] == "backend-1"
+    assert list(path.parent.glob("*.tmp")) == []

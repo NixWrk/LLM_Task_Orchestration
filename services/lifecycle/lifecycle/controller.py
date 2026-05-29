@@ -4,11 +4,8 @@ from typing import Any
 
 import httpx
 
-from lifecycle.allocation import (
-    allocation_overrides,
-    enrich_profile_from_lmstudio_metadata,
-    queue_lengths_from_payload,
-)
+from lifecycle.allocation import queue_lengths_from_payload
+from lifecycle.allocation_service import AllocationService
 from lifecycle.cleanup import CleanupService, idle_seconds
 from lifecycle.config import (
     load_dynamic_model_profile,
@@ -23,7 +20,7 @@ from lifecycle.models import (
     PlacementDecision,
 )
 from lifecycle.registry import BackendRegistry
-from lifecycle.runtime import RuntimeLifecycleService, should_verify_before_start
+from lifecycle.runtime import RuntimeLifecycleService
 from lifecycle.scheduler import choose_gpu, desired_replicas
 
 
@@ -44,6 +41,7 @@ class LifecycleController:
         self.dry_run = dry_run
         self.docker_binary = docker_binary
         self.allocation_results: dict[tuple[str, str], int] = {}
+        self.allocation_service = AllocationService(config_path, registry)
         self.runtime = RuntimeLifecycleService(
             registry=registry,
             request_timeout_seconds=request_timeout_seconds,
@@ -185,72 +183,15 @@ class LifecycleController:
         return plan
 
     async def allocate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        model = str(payload.get("model") or "").strip()
-        if not model:
-            self.record_allocation("unknown", "invalid_request")
-            raise ValueError("Allocation requires a non-empty model.")
-
-        overrides = allocation_overrides(payload)
-        configured_profiles = self.profiles()
-        profile = configured_profiles.get(model)
-        dynamic_config: dict[str, Any] = {}
-        if profile is None:
-            dynamic_config = load_dynamic_models_config(self.config_path)
-            if not dynamic_model_allowed(model, dynamic_config):
-                self.record_allocation(model, "denied")
-                raise PermissionError(f"Model {model} is not allowed by dynamic model policy.")
-            profile = load_dynamic_model_profile(self.config_path, model, overrides)
-        if profile is None:
-            self.record_allocation(model, "not_configured")
-            raise LookupError(f"Model {model} is not configured and dynamic models are disabled.")
-
-        ready_instances = self.registry.ready_for_model(profile.public_name)
-        if ready_instances:
-            instance = min(ready_instances, key=lambda item: item.active_requests)
-            self.record_allocation(profile.public_name, "reused")
-            return {
-                "model": profile.public_name,
-                "created": False,
-                "instance": instance.to_dict(),
-            }
-
-        profile, model_metadata = enrich_profile_from_lmstudio_metadata(
-            profile,
-            dynamic_config,
+        return await self.allocation_service.allocate(
             payload,
+            profiles=self.profiles,
+            gpu_states=self.gpu_states,
+            verify_model_available=self.verify_model_available,
+            start_instance=self.start_instance,
+            initialize_instance=self.initialize_instance,
+            record_allocation=self.record_allocation,
         )
-        if should_verify_before_start(profile):
-            await self.verify_model_available(profile)
-        gpus = await self.gpu_states()
-        decision = choose_gpu(profile, gpus, self.registry)
-        if decision.action != "start" or not decision.gpu_id:
-            self.record_allocation(profile.public_name, "insufficient_vram")
-            return {
-                "model": profile.public_name,
-                "created": False,
-                "decision": decision.to_dict(),
-                "instance": None,
-            }
-
-        gpu_by_id = {gpu.id: gpu for gpu in gpus}
-        try:
-            instance = self.start_instance(profile, decision.to_dict(), gpu_by_id)
-        except Exception:
-            self.record_allocation(profile.public_name, "failed")
-            raise
-        instance.metadata.update(model_metadata)
-        self.registry.upsert(instance)
-        instance = await self.initialize_instance(profile, instance)
-        self.record_allocation(
-            profile.public_name,
-            "created" if instance.state == "ready" else "failed",
-        )
-        return {
-            "model": profile.public_name,
-            "created": instance.state == "ready",
-            "decision": decision.to_dict(),
-            "instance": instance.to_dict(),
-        }
 
     def record_allocation(self, model: str, result: str) -> None:
         key = (model, result)

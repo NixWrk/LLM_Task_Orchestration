@@ -1,25 +1,31 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from lifecycle.models import BackendInstance, now_iso
+from lifecycle.registry_store import JsonFileRegistryStore, RegistryStore
 
 ACTIVE_STATES = {"starting", "warming", "ready"}
 READY_STATES = {"ready"}
 
 
 class BackendRegistry:
-    def __init__(self, path: str) -> None:
-        self.path = Path(path)
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        store: RegistryStore | None = None,
+    ) -> None:
+        if store is None:
+            if path is None:
+                raise ValueError("BackendRegistry requires a path or store.")
+            store = JsonFileRegistryStore(path)
+        self.store = store
+        self.path = Path(path) if path is not None else getattr(store, "path", None)
         self._instances: dict[str, BackendInstance] = {}
         self.load()
 
     def load(self) -> None:
-        if not self.path.exists():
-            self._instances = {}
-            return
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        payload = self.store.load()
         instances = payload.get("instances", [])
         self._instances = {
             str(item["instance_id"]): BackendInstance.from_dict(item)
@@ -28,9 +34,8 @@ class BackendRegistry:
         }
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"instances": [instance.to_dict() for instance in self.list()]}
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.store.save(payload)
 
     def list(self) -> list[BackendInstance]:
         return list(self._instances.values())

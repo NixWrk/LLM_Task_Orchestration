@@ -6,11 +6,13 @@ import os
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-
-DEFAULT_QUEUE_PROXY_URL = "http://localhost:4100"
-DEFAULT_LIFECYCLE_URL = "http://localhost:4300"
+from orchestrator_client import (
+    DEFAULT_LIFECYCLE_URL,
+    DEFAULT_QUEUE_PROXY_URL,
+    OrchestratorClient,
+    join_url,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -93,56 +95,47 @@ def add_orchestration_args(parser: argparse.ArgumentParser) -> None:
 
 
 def cmd_models(args: argparse.Namespace) -> Any:
-    return request_json("GET", join_url(args.lifecycle_url, "/catalog/models"))
+    return client_from_args(args).models()
 
 
 def cmd_registry(args: argparse.Namespace) -> Any:
-    return request_json("GET", join_url(args.lifecycle_url, "/registry"))
+    return client_from_args(args).registry()
 
 
 def cmd_cleanup(args: argparse.Namespace) -> Any:
-    return request_json("POST", join_url(args.lifecycle_url, "/cleanup"), {})
+    return client_from_args(args).cleanup()
 
 
 def cmd_metrics(args: argparse.Namespace) -> str:
-    return request_text("GET", join_url(args.lifecycle_url, "/metrics"))
+    return client_from_args(args).metrics()
 
 
 def cmd_allocate(args: argparse.Namespace) -> Any:
-    return request_json(
-        "POST",
-        join_url(args.lifecycle_url, "/allocations"),
-        {
-            "model": args.model,
-            "orchestration": orchestration_from_args(args),
-        },
-    )
+    return client_from_args(args).allocate(args.model, orchestration_from_args(args))
 
 
 def cmd_chat(args: argparse.Namespace) -> Any:
-    payload = {
-        "model": args.model,
-        "messages": [{"role": "user", "content": args.prompt}],
-        "max_tokens": args.max_tokens,
-        "stream": args.stream,
-        "orchestration": orchestration_from_args(args),
-    }
-    url = join_url(args.queue_url, "/v1/chat/completions")
-    if args.stream:
-        return request_text("POST", url, payload, api_key=args.api_key)
-    return request_json("POST", url, payload, api_key=args.api_key)
+    return client_from_args(args).chat(
+        args.model,
+        args.prompt,
+        max_tokens=args.max_tokens,
+        stream=args.stream,
+        orchestration=orchestration_from_args(args),
+    )
 
 
 def cmd_embeddings(args: argparse.Namespace) -> Any:
-    payload = {
-        "model": args.model,
-        "input": args.text,
-        "orchestration": orchestration_from_args(args),
-    }
-    return request_json(
-        "POST",
-        join_url(args.queue_url, "/v1/embeddings"),
-        payload,
+    return client_from_args(args).embeddings(
+        args.model,
+        args.text,
+        orchestration_from_args(args),
+    )
+
+
+def client_from_args(args: argparse.Namespace) -> OrchestratorClient:
+    return OrchestratorClient(
+        queue_url=args.queue_url,
+        lifecycle_url=args.lifecycle_url,
         api_key=args.api_key,
     )
 
@@ -167,46 +160,6 @@ def orchestration_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "no_warmup", False):
         payload["warmup_enabled"] = False
     return payload
-
-
-def request_json(
-    method: str,
-    url: str,
-    payload: dict[str, Any] | None = None,
-    api_key: str | None = None,
-) -> Any:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"content-type": "application/json"}
-    if api_key:
-        headers["authorization"] = f"Bearer {api_key}"
-    request = Request(
-        url,
-        data=data,
-        method=method,
-        headers=headers,
-    )
-    with urlopen(request, timeout=240) as response:
-        body = response.read().decode("utf-8")
-    return json.loads(body) if body else None
-
-
-def request_text(
-    method: str,
-    url: str,
-    payload: dict[str, Any] | None = None,
-    api_key: str | None = None,
-) -> str:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"content-type": "application/json"} if payload is not None else {}
-    if api_key:
-        headers["authorization"] = f"Bearer {api_key}"
-    request = Request(url, data=data, method=method, headers=headers)
-    with urlopen(request, timeout=60) as response:
-        return response.read().decode("utf-8")
-
-
-def join_url(base_url: str, path: str) -> str:
-    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def print_json(value: Any) -> None:

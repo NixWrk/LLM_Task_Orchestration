@@ -1,34 +1,25 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import yaml
+from orchestrator_core.config import load_orchestrator_config
 
 from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
 
 def load_model_profiles(path: str) -> dict[str, ModelProfile]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
-
-    defaults = raw.get("defaults") or {}
-    models = raw.get("models") or {}
+    config = load_orchestrator_config(path)
     profiles: dict[str, ModelProfile] = {}
 
-    for model_key, model_config in models.items():
-        profile = model_profile_from_data(model_key, model_config or {}, defaults)
+    for model_key, model_config in config.models.items():
+        profile = model_profile_from_data(model_key, model_config or {}, config.defaults)
         profiles[profile.public_name] = profile
 
     return profiles
 
 
 def load_dynamic_models_config(path: str) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
-
-    value = raw.get("dynamic_models") or {}
-    return value if isinstance(value, dict) else {}
+    return load_orchestrator_config(path).dynamic_models
 
 
 def load_dynamic_model_profile(
@@ -36,14 +27,11 @@ def load_dynamic_model_profile(
     model: str,
     overrides: dict[str, Any] | None = None,
 ) -> ModelProfile | None:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
-
-    dynamic_models = raw.get("dynamic_models") or {}
+    config = load_orchestrator_config(path)
+    dynamic_models = config.dynamic_models
     if not bool(dynamic_models.get("enabled", False)):
         return None
 
-    defaults = raw.get("defaults") or {}
     model_config = {
         **dynamic_models,
         **(overrides or {}),
@@ -66,7 +54,7 @@ def load_dynamic_model_profile(
         **lifecycle_defaults,
         **lifecycle_overrides,
     }
-    return model_profile_from_data(model, model_config, defaults)
+    return model_profile_from_data(model, model_config, config.defaults)
 
 
 def model_profile_from_data(
