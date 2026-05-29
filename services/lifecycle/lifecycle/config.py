@@ -61,6 +61,8 @@ def load_dynamic_model_profile(
         "max_replicas": 1,
         "idle_ttl_seconds": 900,
         "preferred_gpus": ["auto"],
+        "load_strategy": "cli-if-available",
+        "lms_binary": "lms",
         **lifecycle_defaults,
         **lifecycle_overrides,
     }
@@ -111,6 +113,18 @@ def model_profile_from_data(
         min_replicas=int(lifecycle_data.get("min_replicas", 0)),
         max_replicas=int(lifecycle_data.get("max_replicas", 1)),
         idle_ttl_seconds=int(lifecycle_data.get("idle_ttl_seconds", 3600)),
+        load_strategy=str(lifecycle_data.get("load_strategy", model_data.get("load_strategy", "none"))),
+        lms_binary=str(lifecycle_data.get("lms_binary", model_data.get("lms_binary", "lms"))),
+        lms_gpu=optional_str(lifecycle_data.get("lms_gpu", model_data.get("lms_gpu"))),
+        lms_context_length=optional_int(
+            lifecycle_data.get("lms_context_length", model_data.get("lms_context_length"))
+        ),
+        lms_parallel=optional_int(
+            lifecycle_data.get("lms_parallel", model_data.get("lms_parallel"))
+        ),
+        lms_ttl_seconds=optional_int(
+            lifecycle_data.get("lms_ttl_seconds", model_data.get("lms_ttl_seconds"))
+        ),
         preferred_gpus=preferred_gpus,
     )
 
@@ -126,6 +140,12 @@ def optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
 
 
 def string_tuple(value: Any) -> tuple[str, ...]:

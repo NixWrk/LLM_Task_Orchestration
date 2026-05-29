@@ -53,6 +53,12 @@ class ModelProfile:
     min_replicas: int
     max_replicas: int
     idle_ttl_seconds: int
+    load_strategy: str = "none"
+    lms_binary: str = "lms"
+    lms_gpu: str | None = None
+    lms_context_length: int | None = None
+    lms_parallel: int | None = None
+    lms_ttl_seconds: int | None = None
     preferred_gpus: tuple[str, ...] = ("auto",)
 
 
@@ -75,6 +81,7 @@ class BackendInstance:
     updated_at: str = field(default_factory=lambda: now_iso())
     last_used_at: str | None = None
     dry_run: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +106,7 @@ class BackendInstance:
             updated_at=str(payload.get("updated_at") or now_iso()),
             last_used_at=payload.get("last_used_at"),
             dry_run=bool(payload.get("dry_run", True)),
+            metadata=dict(payload.get("metadata") or {}),
         )
 
 

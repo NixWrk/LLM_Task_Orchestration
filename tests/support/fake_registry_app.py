@@ -34,6 +34,10 @@ async def allocations(request: Request) -> dict[str, object]:
     global allocated_model
     payload = await request.json()
     allocated_model = str(payload["model"])
+    if allocated_model == os.environ.get("FAKE_REGISTRY_DENIED_MODEL"):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=403, detail="model denied")
     return {
         "model": allocated_model,
         "created": True,

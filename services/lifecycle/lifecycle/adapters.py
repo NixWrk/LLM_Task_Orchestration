@@ -118,6 +118,11 @@ class ExternalOpenAIAdapter:
                 f"Model {profile.public_name} uses runtime {profile.runtime} but has no lifecycle.base_url"
             )
 
+        command = ["external-openai", profile.base_url]
+        loaded_with_lms = False
+        if profile.runtime == "lmstudio":
+            command, loaded_with_lms = maybe_load_lmstudio(profile)
+
         return BackendInstance(
             instance_id=instance_id,
             model=profile.public_name,
@@ -129,12 +134,25 @@ class ExternalOpenAIAdapter:
             reserved_vram_mb=reserved_vram_mb,
             host_port=host_port,
             container_name=None,
-            runtime_command=["external-openai", profile.base_url],
+            runtime_command=command,
             dry_run=False,
+            metadata={
+                "lmstudio_loaded_with_lms": loaded_with_lms,
+                "lms_binary": profile.lms_binary,
+            },
         )
 
-    def stop(self, _instance: BackendInstance) -> None:
-        return None
+    def stop(self, instance: BackendInstance) -> None:
+        if instance.runtime != "lmstudio":
+            return
+        if not instance.metadata.get("lmstudio_loaded_with_lms"):
+            return
+        lms_binary = str(
+            instance.metadata.get("lms_binary")
+            or (instance.runtime_command[0] if instance.runtime_command else "lms")
+        )
+        command = lmstudio_unload_command(lms_binary, instance.backend_model)
+        subprocess.run(command, check=True, capture_output=True, text=True)
 
 
 def adapter_for(profile: ModelProfile, dry_run: bool, docker_binary: str) -> RuntimeAdapter:
@@ -181,6 +199,60 @@ def docker_vllm_command(
         *profile.runtime_extra_args,
     ]
     return command
+
+
+def maybe_load_lmstudio(profile: ModelProfile) -> tuple[list[str], bool]:
+    command = lmstudio_load_command(profile)
+    strategy = profile.load_strategy.lower()
+    if strategy in {"none", "api", "external"}:
+        return ["external-openai", profile.base_url or ""], False
+
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=profile.startup_timeout_seconds,
+        )
+        return command, True
+    except subprocess.CalledProcessError as exc:
+        if lmstudio_identifier_already_exists(exc):
+            return ["lmstudio-preexisting", *command], False
+        raise
+    except FileNotFoundError:
+        if strategy in {"cli-if-available", "if-available", "auto"}:
+            return ["lmstudio-cli-unavailable", *command], False
+        raise
+
+
+def lmstudio_load_command(profile: ModelProfile) -> list[str]:
+    command = [
+        profile.lms_binary,
+        "load",
+        profile.backend_model,
+        "--identifier",
+        profile.backend_model,
+        "--yes",
+    ]
+    if profile.lms_gpu:
+        command.extend(["--gpu", profile.lms_gpu])
+    if profile.lms_context_length is not None:
+        command.extend(["--context-length", str(profile.lms_context_length)])
+    if profile.lms_parallel is not None:
+        command.extend(["--parallel", str(profile.lms_parallel)])
+    if profile.lms_ttl_seconds is not None:
+        command.extend(["--ttl", str(profile.lms_ttl_seconds)])
+    return command
+
+
+def lmstudio_unload_command(lms_binary: str, identifier: str) -> list[str]:
+    return [lms_binary, "unload", identifier]
+
+
+def lmstudio_identifier_already_exists(exc: subprocess.CalledProcessError) -> bool:
+    output = f"{exc.stdout or ''}\n{exc.stderr or ''}".lower()
+    return "identifier" in output and "already exists" in output
 
 
 def container_name(instance_id: str) -> str:

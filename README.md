@@ -64,6 +64,16 @@ docker compose up -d --build queue-proxy
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_dynamic_allocation.ps1
 ```
 
+CLI:
+
+```powershell
+.\.venv\Scripts\pip install -e ".[dev]"
+llmoctl models
+llmoctl allocate mistralai/ministral-3-3b --gpu auto --lms-gpu max
+llmoctl chat mistralai/ministral-3-3b "Return exactly: ok" --max-tokens 8
+llmoctl cleanup
+```
+
 ## Configure LM Studio
 
 Start the LM Studio server on port `1234`.
@@ -79,6 +89,8 @@ lms load <model-key> --identifier local-main
 ```
 
 Use the model identifier you load as `LMSTUDIO_MODEL_ID`.
+
+Dynamic LM Studio profiles can also let lifecycle call `lms load <model-key> --identifier <model-key> --yes` and `lms unload <model-key>` automatically. This works when lifecycle runs where the `lms` CLI is available. In Docker on Windows, the Linux lifecycle container normally cannot execute the host `lms.exe`, so the default `cli-if-available` strategy falls back to using already reachable LM Studio API models.
 
 To discover already downloaded models:
 
@@ -235,6 +247,8 @@ ENABLE_BACKEND_REGISTRY_ROUTING=true
 
 When registry routing is enabled and no ready backend exists for a requested dynamic model, queue proxy calls lifecycle `POST /allocations` before forwarding the request.
 
+For LM Studio dynamic models, lifecycle can auto-estimate VRAM from `lms ls --json` metadata. A caller may still send `orchestration.estimated_vram_gb` to override that reservation for a specific task.
+
 By default it falls back to `UPSTREAM_LITELLM_BASE_URL` when the registry has no ready HTTP backend. To force registry-only routing:
 
 ```text
@@ -302,6 +316,8 @@ models:
 
 When `LIFECYCLE_DRY_RUN=false`, lifecycle starts the container, waits for `/v1/models`, sends a warmup chat completion, then marks the backend `ready`. Idle ready instances above `min_replicas` are marked `draining`, stopped with `docker stop`, and then marked `stopped`.
 
+Lifecycle also exposes `POST /cleanup` and `:4300/metrics` for LM Studio/vLLM backend operations. Cleanup stops idle dynamic LM Studio allocations and purges old stopped/failed LM Studio records after `dynamic_models.registry_cleanup_ttl_seconds`.
+
 ## Development
 
 Run the healthcheck service locally:
@@ -345,6 +361,11 @@ Implemented now:
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Lifecycle support for already-running LM Studio/OpenAI-compatible backends.
 - Dynamic model allocation from request payloads through lifecycle `POST /allocations`.
+- LM Studio dynamic loading/unloading through `lms load/unload` when the CLI is available.
+- LM Studio VRAM auto-estimation from `lms ls --json` metadata.
+- `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, cleanup, and metrics.
+- Prometheus metrics for lifecycle GPU/model/allocation state and queue proxy queue/request state.
+- Registry cleanup TTL for old LM Studio allocation records.
 - Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.
 - Real-run preparation script and documentation.
 - Environment-driven settings.

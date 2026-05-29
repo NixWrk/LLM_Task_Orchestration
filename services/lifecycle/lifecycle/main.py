@@ -126,6 +126,13 @@ async def reconcile(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/cleanup")
+async def cleanup(request: Request) -> JSONResponse:
+    payload = await request.json()
+    result = await controller.cleanup(queue_lengths_from_payload(payload))
+    return JSONResponse(result)
+
+
 @app.post("/allocations")
 async def allocate(request: Request) -> JSONResponse:
     payload = await request.json()
@@ -147,14 +154,46 @@ async def allocate(request: Request) -> JSONResponse:
 async def metrics() -> Response:
     instances = registry.list()
     lines = [
-        f'llm_backend_instances{{state="{state}"}} '
-        f'{sum(1 for instance in instances if instance.state == state)}'
+        f'llm_backend_instances{{state="{state}",runtime="{runtime}"}} '
+        f'{sum(1 for instance in instances if instance.state == state and instance.runtime == runtime)}'
         for state in ("starting", "warming", "ready", "draining", "failed", "stopped")
+        for runtime in sorted({instance.runtime for instance in instances} or {"none"})
     ]
+    for instance in instances:
+        labels = prom_labels(model=instance.model, runtime=instance.runtime, state=instance.state)
+        lines.append(f"llm_backend_active_requests{{{labels}}} {instance.active_requests}")
+        lines.append(f"llm_backend_reserved_vram_mb{{{labels}}} {instance.reserved_vram_mb}")
+
+    for (model, result), count in sorted(controller.allocation_results.items()):
+        labels = prom_labels(model=model, result=result)
+        lines.append(f"llm_allocations_total{{{labels}}} {count}")
+
+    try:
+        for gpu in await controller.gpu_states():
+            labels = prom_labels(gpu_id=gpu.id, gpu_index=gpu.index, name=gpu.name)
+            lines.append(f"llm_gpu_memory_total_mb{{{labels}}} {gpu.memory_total_mb}")
+            lines.append(f"llm_gpu_memory_used_mb{{{labels}}} {gpu.memory_used_mb}")
+            lines.append(f"llm_gpu_memory_free_mb{{{labels}}} {gpu.memory_free_mb}")
+    except Exception:
+        lines.append("llm_gpu_inventory_up 0")
+    else:
+        lines.append("llm_gpu_inventory_up 1")
+
     return Response(
         "\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+def prom_labels(**labels: object) -> str:
+    return ",".join(
+        f'{name}="{prom_label_value(value)}"'
+        for name, value in labels.items()
+    )
+
+
+def prom_label_value(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 async def periodic_reconcile_loop() -> None:

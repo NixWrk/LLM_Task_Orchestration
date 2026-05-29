@@ -12,12 +12,16 @@ defaults:
 dynamic_models:
   enabled: true
   source: lmstudio
+  auto_vram_from_lms: true
+  lms_binary: lms
+  registry_cleanup_ttl_seconds: 3600
   allowed_model_patterns:
     - "*"
   denied_model_patterns: []
   lifecycle:
     runtime: lmstudio
     base_url: http://host.docker.internal:1234/v1
+    load_strategy: cli-if-available
     estimated_vram_gb: 8
     safety_margin_gb: 1
     min_replicas: 0

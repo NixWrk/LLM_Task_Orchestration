@@ -6,9 +6,9 @@ The short version:
 
 - normal inference requests go to `queue-proxy` on `/v1/...`;
 - capacity and startup requests go to the lifecycle control plane;
-- clients should request intent and constraints, not manually reserve GPU memory;
+- clients should request intent and constraints, not manually reserve GPU memory unless they intentionally override the scheduler hint;
 - the orchestrator decides placement, replica count, backend URL, and routing.
-- dynamic model requests must pass the lifecycle catalog policy.
+- dynamic model requests must pass the lifecycle allow/deny policy.
 
 ## Current Implemented Flow
 
@@ -320,25 +320,23 @@ Recommended error types:
 
 ## CLI Recommendation
 
-A CLI is worth adding before MCP because it gives humans and scripts a stable operational interface.
-
-Suggested command name:
+The repository now includes a thin operational CLI:
 
 ```text
 llmoctl
 ```
 
-Suggested commands:
+Implemented commands:
 
 ```powershell
-llmoctl gpu list
-llmoctl model list
-llmoctl registry list
-llmoctl allocation request --model qwen-14b --service zotero-worker --min 1 --max 2 --vram-gb 16
-llmoctl allocation status alloc_01jz_resource_001
-llmoctl allocation release alloc_01jz_resource_001
-llmoctl reconcile --queue local-main=3
-llmoctl smoke --model local-main
+llmoctl models
+llmoctl registry
+llmoctl allocate qwen/qwen3.5-9b --gpu auto --lms-gpu max --lms-context-length 8192
+llmoctl chat qwen/qwen3.5-9b "Return exactly: ok" --max-tokens 8
+llmoctl chat qwen/qwen3.5-9b "stream" --stream
+llmoctl embeddings text-embedding-bge-m3 "hello"
+llmoctl cleanup
+llmoctl metrics
 ```
 
 The CLI should be a thin wrapper over the HTTP API. It should not contain scheduler logic.
@@ -366,15 +364,17 @@ Recommended order:
 3. Add `llmoctl` CLI.
 4. Add MCP server as an adapter over the same client package.
 
-## Current Gap
+## Implemented Low-Level API
 
-The allocation endpoints in this document are the target contract. The repository currently has lower-level building blocks:
+The full task-aware allocation object in this document is still the target contract. The repository currently implements these lower-level building blocks:
 
 - `/plan`
 - `/reconcile`
+- `/cleanup`
+- `/allocations`
 - `/registry`
 - `/registry/{instance_id}/lease`
 - `/registry/{instance_id}/lease` release via `DELETE`
 - OpenAI-compatible `/v1/...` queue proxy endpoints
 
-The next implementation step is to add `/allocations` as the stable high-level API on top of these primitives.
+The next implementation step is to add persistent allocation IDs and service/task ownership on top of the implemented dynamic model allocation path.

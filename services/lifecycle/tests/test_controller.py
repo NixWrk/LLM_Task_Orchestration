@@ -4,11 +4,14 @@ from pathlib import Path
 
 from lifecycle.controller import (
     LifecycleController,
+    allocation_overrides,
     dynamic_model_allowed,
+    estimate_vram_mb_from_lmstudio_metadata,
     idle_seconds,
     openai_url,
+    should_verify_before_start,
 )
-from lifecycle.models import BackendInstance, GpuState
+from lifecycle.models import BackendInstance, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
 
 
@@ -50,8 +53,10 @@ def test_allocate_dynamic_lmstudio_model_registers_ready_backend(
                 "  max_active_requests: 1",
                 "dynamic_models:",
                 "  enabled: true",
+                "  auto_vram_from_lms: false",
                 "  lifecycle:",
                 "    base_url: http://host.docker.internal:1234/v1",
+                "    load_strategy: none",
                 "    estimated_vram_gb: 8",
                 "    safety_margin_gb: 1",
             ]
@@ -101,6 +106,24 @@ def test_dynamic_model_allowed_honors_allow_and_deny_patterns() -> None:
     assert dynamic_model_allowed("mistralai/ministral-3-3b", config) is False
 
 
+def test_allocation_overrides_map_max_parallel_to_lmstudio_parallel() -> None:
+    overrides = allocation_overrides(
+        {
+            "model": "qwen",
+            "orchestration": {
+                "max_parallel": 2,
+                "lms_gpu": "max",
+                "lms_context_length": 8192,
+            },
+        }
+    )
+
+    lifecycle = overrides["lifecycle"]
+    assert lifecycle["lms_parallel"] == 2
+    assert lifecycle["lms_gpu"] == "max"
+    assert lifecycle["lms_context_length"] == 8192
+
+
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:
     config_path = tmp_path / "orchestrator.yaml"
     config_path.write_text(
@@ -128,3 +151,200 @@ def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:
         assert "not allowed" in str(exc)
     else:
         raise AssertionError("Expected PermissionError")
+
+
+def test_estimate_vram_from_lmstudio_metadata_uses_size_and_context() -> None:
+    estimate = estimate_vram_mb_from_lmstudio_metadata(
+        {
+            "sizeBytes": 8 * 1024 * 1024 * 1024,
+            "maxContextLength": 32768,
+        },
+        fallback_mb=1024,
+    )
+
+    assert estimate > 8 * 1024
+
+
+def test_estimate_vram_from_lmstudio_metadata_can_replace_large_fallback() -> None:
+    estimate = estimate_vram_mb_from_lmstudio_metadata(
+        {
+            "sizeBytes": 512 * 1024 * 1024,
+            "maxContextLength": 8192,
+        },
+        fallback_mb=8 * 1024,
+    )
+
+    assert estimate < 8 * 1024
+    assert estimate > 512
+
+
+def test_lmstudio_cli_load_strategy_skips_pre_start_openai_check() -> None:
+    profile = lmstudio_profile(load_strategy="cli-if-available")
+
+    assert should_verify_before_start(profile) is False
+    assert should_verify_before_start(
+        ModelProfile(**{**profile.__dict__, "load_strategy": "none"})
+    ) is True
+
+
+def test_initialize_failure_stops_loaded_lmstudio_instance(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text("dynamic_models:\n  enabled: true\n", encoding="utf-8")
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    instance = BackendInstance(
+        instance_id="lmstudio-1",
+        model="qwen",
+        backend_model="qwen",
+        runtime="lmstudio",
+        base_url="http://host.docker.internal:1234/v1",
+        gpu_ids=["gpu0"],
+        state="starting",
+        reserved_vram_mb=1024,
+        dry_run=False,
+        metadata={"lmstudio_loaded_with_lms": True},
+    )
+    registry.upsert(instance)
+    controller = LifecycleController(
+        config_path=str(config_path),
+        registry=registry,
+        gpu_inventory_url="http://gpu-inventory:4200",
+        request_timeout_seconds=1,
+        dry_run=False,
+    )
+    stop_calls: list[str] = []
+
+    async def fake_wait_for_health(_profile, _instance) -> None:
+        raise RuntimeError("boom")
+
+    class FakeAdapter:
+        def stop(self, stopped_instance: BackendInstance) -> None:
+            stop_calls.append(stopped_instance.instance_id)
+
+    monkeypatch.setattr(controller, "wait_for_health", fake_wait_for_health)
+    monkeypatch.setattr(
+        "lifecycle.controller.adapter_for",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+
+    failed = asyncio.run(controller.initialize_instance(lmstudio_profile(), instance))
+
+    assert failed.state == "failed"
+    assert stop_calls == ["lmstudio-1"]
+
+
+def lmstudio_profile(load_strategy: str = "cli-if-available") -> ModelProfile:
+    return ModelProfile(
+        public_name="qwen",
+        backend_model="qwen",
+        runtime="lmstudio",
+        artifact=None,
+        runtime_image=None,
+        host_port_start=8100,
+        container_port=8000,
+        public_host="host.docker.internal",
+        base_url="http://host.docker.internal:1234/v1",
+        docker_extra_args=(),
+        runtime_extra_args=(),
+        volume_mounts=(),
+        environment=(),
+        healthcheck_path="/v1/models",
+        startup_timeout_seconds=120,
+        healthcheck_interval_seconds=2,
+        warmup_enabled=True,
+        warmup_prompt="Return exactly: ok",
+        warmup_max_tokens=8,
+        estimated_vram_mb=8 * 1024,
+        safety_margin_mb=1024,
+        min_replicas=0,
+        max_replicas=1,
+        idle_ttl_seconds=900,
+        load_strategy=load_strategy,
+    )
+
+
+def test_cleanup_stops_idle_dynamic_instance(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "dynamic_models:",
+                "  enabled: true",
+                "  lifecycle:",
+                "    base_url: http://host.docker.internal:1234/v1",
+                "    idle_ttl_seconds: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    old = datetime.now(UTC) - timedelta(seconds=30)
+    registry.upsert(
+        BackendInstance(
+            instance_id="old",
+            model="qwen/qwen3.5-9b",
+            backend_model="qwen/qwen3.5-9b",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=1024,
+            last_used_at=old.isoformat(),
+            dry_run=False,
+            metadata={"idle_ttl_seconds": 1},
+        )
+    )
+    controller = LifecycleController(
+        config_path=str(config_path),
+        registry=registry,
+        gpu_inventory_url="http://gpu-inventory:4200",
+        request_timeout_seconds=1,
+        dry_run=True,
+    )
+
+    result = asyncio.run(controller.cleanup({}))
+
+    assert result["stopped_instances"][0]["state"] == "stopped"
+
+
+def test_cleanup_removes_stale_lmstudio_allocations(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "dynamic_models:",
+                "  enabled: true",
+                "  registry_cleanup_ttl_seconds: 1",
+                "  lifecycle:",
+                "    base_url: http://host.docker.internal:1234/v1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    old = datetime.now(UTC) - timedelta(seconds=30)
+    registry.upsert(
+        BackendInstance(
+            instance_id="stale",
+            model="qwen/qwen3.5-9b",
+            backend_model="qwen/qwen3.5-9b",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="stopped",
+            reserved_vram_mb=1024,
+            updated_at=old.isoformat(),
+            last_used_at=old.isoformat(),
+        )
+    )
+    controller = LifecycleController(
+        config_path=str(config_path),
+        registry=registry,
+        gpu_inventory_url="http://gpu-inventory:4200",
+        request_timeout_seconds=1,
+        dry_run=True,
+    )
+
+    result = asyncio.run(controller.cleanup({}))
+
+    assert result["removed_instances"][0]["instance_id"] == "stale"
+    assert registry.list() == []

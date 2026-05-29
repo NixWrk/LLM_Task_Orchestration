@@ -12,6 +12,9 @@ dependencies = [
   "uvicorn[standard]>=0.30.0",
 ]
 
+[project.scripts]
+llmoctl = "llmoctl:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3.0",
@@ -19,6 +22,7 @@ dev = [
 
 [tool.setuptools]
 packages = []
+py-modules = ["llmoctl"]
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -33,6 +37,6 @@ testpaths = [
   "services/queue_proxy/tests",
   "services/gpu_inventory/tests",
   "services/lifecycle/tests",
-  "tests/integration",
+  "tests",
 ]
 addopts = "-q"

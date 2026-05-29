@@ -22,7 +22,6 @@ Authorization: Bearer <QUEUE_PROXY_API_KEY if configured>
     "max_parallel": 1,
     "max_queued_requests": 8,
     "queue_timeout_seconds": 30,
-    "estimated_vram_gb": 8,
     "safety_margin_gb": 1,
     "idle_ttl_seconds": 900,
     "tokens": {
@@ -34,6 +33,8 @@ Authorization: Bearer <QUEUE_PROXY_API_KEY if configured>
 ```
 
 `orchestration` is consumed by queue proxy and lifecycle. It is removed before forwarding to LM Studio, vLLM, or another OpenAI-compatible backend.
+
+`estimated_vram_gb` is optional for LM Studio dynamic models. When `dynamic_models.auto_vram_from_lms: true`, lifecycle reads `lms ls --json` metadata and estimates the VRAM reservation from `sizeBytes` plus context overhead. Send `orchestration.estimated_vram_gb` only when a caller has a better task-specific reservation hint.
 
 After starting the stack, run the repeatable smoke test:
 
@@ -69,7 +70,9 @@ Content-Type: application/json
     "runtime": "lmstudio",
     "base_url": "http://host.docker.internal:1234/v1",
     "gpu": "gpu0",
-    "estimated_vram_gb": 8,
+    "lms_gpu": "max",
+    "lms_context_length": 8192,
+    "max_parallel": 1,
     "safety_margin_gb": 1,
     "idle_ttl_seconds": 900
   }
@@ -110,12 +113,16 @@ Dynamic allocation is enabled by:
 dynamic_models:
   enabled: true
   source: lmstudio
+  auto_vram_from_lms: true
+  lms_binary: lms
+  registry_cleanup_ttl_seconds: 3600
   allowed_model_patterns:
     - "*"
   denied_model_patterns: []
   lifecycle:
     runtime: lmstudio
     base_url: http://host.docker.internal:1234/v1
+    load_strategy: cli-if-available
     estimated_vram_gb: 8
     safety_margin_gb: 1
     min_replicas: 0
@@ -143,7 +150,23 @@ dynamic_models:
     - "*embedding*"
 ```
 
-Lifecycle only allocates a dynamic model when it is both allowed by policy and visible through the LM Studio `/v1/models` catalog.
+Lifecycle only allocates a dynamic model when it is allowed by policy. With `load_strategy: none`, the model must already be visible through the LM Studio `/v1/models` catalog. With `load_strategy: cli` or `cli-if-available`, lifecycle starts from LM Studio CLI metadata and lets `lms load` make the model visible before healthcheck/warmup.
+
+With `load_strategy: cli` or `cli-if-available`, lifecycle tries to run:
+
+```powershell
+lms load <model-key> --identifier <model-key> --yes
+```
+
+and later unloads models it actually loaded with:
+
+```powershell
+lms unload <model-key>
+```
+
+`cli-if-available` is the default for dynamic LM Studio profiles. It lets a Docker lifecycle container continue when Windows host `lms.exe` is not available inside the container, while local host runs can use real `lms load/unload`. If `lms load` reports that the identifier already exists, lifecycle treats that as a pre-existing LM Studio load and will not unload it during idle cleanup.
+
+`registry_cleanup_ttl_seconds` removes old `stopped` or `failed` LM Studio allocation records from the registry after the TTL. Idle ready instances are stopped first by `idle_ttl_seconds`; cleanup then purges stale records.
 
 Queue proxy should route through lifecycle:
 
@@ -158,3 +181,53 @@ REQUIRE_BACKEND_REGISTRY_BACKEND=true
 ```
 
 With strict mode disabled, queue proxy may fall back to LiteLLM if allocation fails.
+
+## CLI
+
+Install the project in the local virtualenv:
+
+```powershell
+.\.venv\Scripts\pip install -e ".[dev]"
+```
+
+Then use `llmoctl` for common operations:
+
+```powershell
+llmoctl models
+llmoctl registry
+llmoctl allocate qwen/qwen3.5-9b --gpu auto --lms-gpu max --lms-context-length 8192
+llmoctl chat qwen/qwen3.5-9b "Return exactly: ok" --max-tokens 8
+llmoctl embeddings text-embedding-bge-m3 "hello"
+llmoctl cleanup
+llmoctl metrics
+```
+
+Useful environment defaults:
+
+```text
+LLMO_QUEUE_URL=http://localhost:4100
+LLMO_LIFECYCLE_URL=http://localhost:4300
+LLMO_API_KEY=<queue-proxy-api-key>
+```
+
+## Cleanup And Metrics
+
+Manual cleanup:
+
+```http
+POST http://localhost:4300/cleanup
+Content-Type: application/json
+```
+
+```json
+{
+  "queue_lengths": {
+    "qwen/qwen3.5-9b": 0
+  }
+}
+```
+
+Prometheus metrics are exposed by both queue proxy and lifecycle:
+
+- Queue proxy `:4100/metrics`: `llm_queue_length`, `llm_active_requests`, request/error/latency/token-budget counters.
+- Lifecycle `:4300/metrics`: `llm_backend_instances`, `llm_backend_active_requests`, `llm_backend_reserved_vram_mb`, `llm_allocations_total`, `llm_gpu_memory_total_mb`, `llm_gpu_memory_used_mb`, `llm_gpu_memory_free_mb`, `llm_gpu_inventory_up`.

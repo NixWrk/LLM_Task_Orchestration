@@ -95,6 +95,24 @@ models:
 
 `runtime: lmstudio` does not start a container. Lifecycle registers the already running LM Studio server, waits for `/v1/models`, sends a warmup request, then marks the backend `ready`.
 
+To let lifecycle load and unload this model through the LM Studio CLI, add:
+
+```yaml
+lifecycle:
+  runtime: lmstudio
+  base_url: http://host.docker.internal:1234/v1
+  load_strategy: cli-if-available
+  lms_binary: lms
+  lms_gpu: max
+  lms_context_length: 8192
+  lms_parallel: 1
+  lms_ttl_seconds: 900
+```
+
+Lifecycle then runs `lms load <backend_model> --identifier <backend_model> --yes` before healthcheck/warmup and `lms unload <backend_model>` during idle stop, but only for models it actually loaded. If the identifier already exists, lifecycle treats it as pre-existing and leaves unloading to LM Studio/user TTL.
+
+On Windows with Docker Compose, the lifecycle container normally cannot execute the host `lms.exe`. Use `cli-if-available` for Docker safety, or run lifecycle directly on the host when you want real CLI control.
+
 ## Route Through The Registry
 
 For direct routing to ready LM Studio/vLLM backends:
@@ -118,5 +136,7 @@ Add one `models.<name>` block per public model in `config/orchestrator.yaml`. Us
 - Larger models: reserve enough VRAM for context, KV cache, and batching.
 
 LM Studio itself decides how the model is loaded. The orchestrator controls admission, queues, token budgets, health/warmup, and routing. For hard multi-replica GPU placement, use the Docker vLLM adapter described in [Docker vLLM Runtime Adapter](DOCKER_VLLM_RUNTIME.md).
+
+For dynamic models, `dynamic_models.auto_vram_from_lms: true` makes lifecycle estimate VRAM from `lms ls --json` fields such as `sizeBytes` and `maxContextLength`; it also stores compact LM Studio metadata like quantization and selected variant in the backend registry. Manual `estimated_vram_gb` remains available as a per-request override.
 
 For application-side request examples where the app names the model and asks for GPU/token/concurrency constraints, see [Dynamic Model Allocation](DYNAMIC_MODEL_ALLOCATION.md).

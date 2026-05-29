@@ -157,6 +157,8 @@ def test_load_dynamic_model_profile_uses_lmstudio_defaults(tmp_path: Path) -> No
                 "  lifecycle:",
                 "    base_url: http://host.docker.internal:1234/v1",
                 "    estimated_vram_gb: 9",
+                "    load_strategy: cli-if-available",
+                "    lms_ttl_seconds: 900",
                 "    preferred_gpus: [gpu1]",
             ]
         ),
@@ -171,4 +173,6 @@ def test_load_dynamic_model_profile_uses_lmstudio_defaults(tmp_path: Path) -> No
     assert profile.runtime == "lmstudio"
     assert profile.base_url == "http://host.docker.internal:1234/v1"
     assert profile.estimated_vram_mb == 9 * 1024
+    assert profile.load_strategy == "cli-if-available"
+    assert profile.lms_ttl_seconds == 900
     assert profile.preferred_gpus == ("gpu1",)

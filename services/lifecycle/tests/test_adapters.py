@@ -1,8 +1,13 @@
+import subprocess
+
 from lifecycle.adapters import (
     DockerVllmAdapter,
     DryRunAdapter,
     ExternalOpenAIAdapter,
     docker_vllm_command,
+    lmstudio_identifier_already_exists,
+    lmstudio_load_command,
+    lmstudio_unload_command,
 )
 from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
@@ -138,3 +143,111 @@ def test_external_openai_adapter_uses_configured_base_url() -> None:
     assert instance.state == "starting"
     assert instance.dry_run is False
     assert instance.runtime_command == ["external-openai", "http://host.docker.internal:1234/v1"]
+
+
+def test_lmstudio_load_command_contains_identifier_and_runtime_options() -> None:
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli",
+            "lms_binary": "lms",
+            "lms_gpu": "max",
+            "lms_context_length": 8192,
+            "lms_parallel": 2,
+            "lms_ttl_seconds": 900,
+        }
+    )
+
+    command = lmstudio_load_command(external)
+
+    assert command[:3] == ["lms", "load", "qwen"]
+    assert ["--identifier", "qwen"] == command[3:5]
+    assert "--gpu" in command
+    assert "max" in command
+    assert "--context-length" in command
+    assert "--parallel" in command
+    assert "--ttl" in command
+
+
+def test_lmstudio_unload_command_uses_loaded_identifier() -> None:
+    assert lmstudio_unload_command("lms", "qwen") == ["lms", "unload", "qwen"]
+
+
+def test_external_openai_adapter_loads_and_unloads_lmstudio_with_cli(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "runtime_image": None,
+            "artifact": None,
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli",
+            "lms_binary": "lms",
+            "lms_ttl_seconds": 30,
+        }
+    )
+
+    adapter = ExternalOpenAIAdapter()
+    instance = adapter.start(
+        external,
+        gpu_id="gpu0",
+        gpu_index=0,
+        host_port=8100,
+        instance_id="lmstudio-1",
+        reserved_vram_mb=16 * 1024,
+    )
+    adapter.stop(instance)
+
+    assert calls[0][:3] == ["lms", "load", "qwen"]
+    assert calls[-1] == ["lms", "unload", "qwen"]
+    assert instance.metadata["lmstudio_loaded_with_lms"] is True
+
+
+def test_external_openai_adapter_skips_lmstudio_load_when_cli_is_unavailable(
+    monkeypatch,
+) -> None:
+    def fake_run(_command, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "runtime_image": None,
+            "artifact": None,
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli-if-available",
+            "lms_binary": "missing-lms",
+        }
+    )
+
+    instance = ExternalOpenAIAdapter().start(
+        external,
+        gpu_id="gpu0",
+        gpu_index=0,
+        host_port=8100,
+        instance_id="lmstudio-1",
+        reserved_vram_mb=16 * 1024,
+    )
+
+    assert instance.runtime_command[0] == "lmstudio-cli-unavailable"
+    assert instance.metadata["lmstudio_loaded_with_lms"] is False
+
+
+def test_lmstudio_identifier_already_exists_detection() -> None:
+    exc = subprocess.CalledProcessError(
+        1,
+        ["lms", "load", "qwen"],
+        stderr="Error: A model with identifier qwen already exists.",
+    )
+
+    assert lmstudio_identifier_already_exists(exc) is True
