@@ -12,6 +12,9 @@ defaults:
 dynamic_models:
   enabled: true
   source: lmstudio
+  allowed_model_patterns:
+    - "*"
+  denied_model_patterns: []
   lifecycle:
     runtime: lmstudio
     base_url: http://host.docker.internal:1234/v1

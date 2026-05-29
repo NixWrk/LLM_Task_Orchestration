@@ -259,7 +259,7 @@ def test_queue_proxy_routes_through_backend_registry(
 
     with running_fake_backend(fake_port), running_fake_registry(
         registry_port,
-        f"http://127.0.0.1:{fake_port}",
+        f"http://127.0.0.1:{fake_port}/v1",
     ), running_queue_proxy(
         proxy_port,
         unused_static_upstream_port,

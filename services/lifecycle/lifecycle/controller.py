@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+from fnmatch import fnmatchcase
 from time import monotonic
 from typing import Any
 
 import httpx
 
 from lifecycle.adapters import adapter_for
-from lifecycle.config import load_dynamic_model_profile, load_model_profiles
+from lifecycle.config import (
+    load_dynamic_model_profile,
+    load_dynamic_models_config,
+    load_model_profiles,
+)
 from lifecycle.models import (
     BackendInstance,
     GpuState,
@@ -49,6 +54,37 @@ class LifecycleController:
         if model in profiles:
             return profiles[model]
         return load_dynamic_model_profile(self.config_path, model, overrides)
+
+    async def catalog(self) -> dict[str, Any]:
+        profiles = self.profiles()
+        dynamic_config = load_dynamic_models_config(self.config_path)
+        dynamic_enabled = bool(dynamic_config.get("enabled", False))
+        dynamic_models: list[dict[str, Any]] = []
+
+        if dynamic_enabled:
+            probe = load_dynamic_model_profile(self.config_path, "__catalog_probe__")
+            if probe and probe.base_url:
+                for model_id in await self.list_openai_model_ids(probe.base_url):
+                    dynamic_models.append(
+                        {
+                            "id": model_id,
+                            "allowed": dynamic_model_allowed(model_id, dynamic_config),
+                            "source": dynamic_config.get("source", "lmstudio"),
+                        }
+                    )
+
+        return {
+            "configured_models": [
+                {
+                    "id": profile.public_name,
+                    "backend_model": profile.backend_model,
+                    "runtime": profile.runtime,
+                }
+                for profile in profiles.values()
+            ],
+            "dynamic_models_enabled": dynamic_enabled,
+            "dynamic_models": dynamic_models,
+        }
 
     async def gpu_states(self) -> list[GpuState]:
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
@@ -144,7 +180,13 @@ class LifecycleController:
             raise ValueError("Allocation requires a non-empty model.")
 
         overrides = allocation_overrides(payload)
-        profile = self.profile_for_model(model, overrides)
+        configured_profiles = self.profiles()
+        profile = configured_profiles.get(model)
+        if profile is None:
+            dynamic_config = load_dynamic_models_config(self.config_path)
+            if not dynamic_model_allowed(model, dynamic_config):
+                raise PermissionError(f"Model {model} is not allowed by dynamic model policy.")
+            profile = load_dynamic_model_profile(self.config_path, model, overrides)
         if profile is None:
             raise LookupError(f"Model {model} is not configured and dynamic models are disabled.")
 
@@ -267,16 +309,17 @@ class LifecycleController:
             response.raise_for_status()
             payload = response.json()
 
-        raw_models = payload.get("data", [])
-        if not isinstance(raw_models, list):
-            return
-        model_ids = {
-            str(item.get("id"))
-            for item in raw_models
-            if isinstance(item, dict) and item.get("id") is not None
-        }
+        model_ids = model_ids_from_openai_payload(payload)
         if profile.backend_model not in model_ids:
             raise LookupError(f"Model {profile.backend_model} is not visible at {profile.base_url}.")
+
+    async def list_openai_model_ids(self, base_url: str) -> list[str]:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+            response = await client.get(openai_url(base_url, "/v1/models"))
+            response.raise_for_status()
+            payload = response.json()
+
+        return sorted(model_ids_from_openai_payload(payload))
 
     async def stop_idle_instances(
         self,
@@ -361,6 +404,46 @@ def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
         lifecycle["preferred_gpus"] = gpu if isinstance(gpu, list) else [gpu]
 
     return {"lifecycle": lifecycle} if lifecycle else {}
+
+
+def model_ids_from_openai_payload(payload: dict[str, Any]) -> set[str]:
+    raw_models = payload.get("data", [])
+    if not isinstance(raw_models, list):
+        return set()
+    return {
+        str(item.get("id"))
+        for item in raw_models
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+
+
+def dynamic_model_allowed(model: str, config: dict[str, Any]) -> bool:
+    if not bool(config.get("enabled", False)):
+        return False
+
+    denied = pattern_list(config, "denied_models", "deny_models", "denied_model_patterns")
+    if any(pattern_matches(model, pattern) for pattern in denied):
+        return False
+
+    allowed = pattern_list(config, "allowed_models", "allow_models", "allowed_model_patterns")
+    if not allowed:
+        return True
+    return any(pattern_matches(model, pattern) for pattern in allowed)
+
+
+def pattern_list(config: dict[str, Any], *keys: str) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        raw = config.get(key)
+        if isinstance(raw, list):
+            values.extend(str(item) for item in raw)
+        elif raw not in (None, ""):
+            values.append(str(raw))
+    return values
+
+
+def pattern_matches(value: str, pattern: str) -> bool:
+    return value == pattern or fnmatchcase(value, pattern)
 
 
 async def async_sleep(seconds: float) -> None:

@@ -35,6 +35,14 @@ Authorization: Bearer <QUEUE_PROXY_API_KEY if configured>
 
 `orchestration` is consumed by queue proxy and lifecycle. It is removed before forwarding to LM Studio, vLLM, or another OpenAI-compatible backend.
 
+After starting the stack, run the repeatable smoke test:
+
+```powershell
+docker compose up -d --build queue-proxy
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_dynamic_allocation.ps1 `
+  -Model mistralai/ministral-3-3b
+```
+
 The request flow is:
 
 1. Queue proxy resolves an explicit model policy, or builds a dynamic policy from `defaults`.
@@ -102,6 +110,9 @@ Dynamic allocation is enabled by:
 dynamic_models:
   enabled: true
   source: lmstudio
+  allowed_model_patterns:
+    - "*"
+  denied_model_patterns: []
   lifecycle:
     runtime: lmstudio
     base_url: http://host.docker.internal:1234/v1
@@ -113,6 +124,26 @@ dynamic_models:
     preferred_gpus:
       - auto
 ```
+
+Inspect the active catalog:
+
+```powershell
+Invoke-RestMethod http://localhost:4300/catalog/models
+```
+
+`allowed_model_patterns` and `denied_model_patterns` use exact names or shell-style wildcards. For example:
+
+```yaml
+dynamic_models:
+  enabled: true
+  allowed_model_patterns:
+    - qwen*
+    - google/gemma-4-e2b
+  denied_model_patterns:
+    - "*embedding*"
+```
+
+Lifecycle only allocates a dynamic model when it is both allowed by policy and visible through the LM Studio `/v1/models` catalog.
 
 Queue proxy should route through lifecycle:
 

@@ -23,6 +23,14 @@ def load_model_profiles(path: str) -> dict[str, ModelProfile]:
     return profiles
 
 
+def load_dynamic_models_config(path: str) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+
+    value = raw.get("dynamic_models") or {}
+    return value if isinstance(value, dict) else {}
+
+
 def load_dynamic_model_profile(
     path: str,
     model: str,

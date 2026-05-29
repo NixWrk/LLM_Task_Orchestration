@@ -8,6 +8,7 @@ The short version:
 - capacity and startup requests go to the lifecycle control plane;
 - clients should request intent and constraints, not manually reserve GPU memory;
 - the orchestrator decides placement, replica count, backend URL, and routing.
+- dynamic model requests must pass the lifecycle catalog policy.
 
 ## Current Implemented Flow
 

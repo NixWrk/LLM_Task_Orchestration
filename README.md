@@ -57,6 +57,13 @@ If you already have models downloaded in LM Studio, use [LM Studio Models](docs/
 
 Applications can request any allowed LM Studio model dynamically through the queue proxy; see [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
 
+Dynamic smoke test:
+
+```powershell
+docker compose up -d --build queue-proxy
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_dynamic_allocation.ps1
+```
+
 ## Configure LM Studio
 
 Start the LM Studio server on port `1234`.

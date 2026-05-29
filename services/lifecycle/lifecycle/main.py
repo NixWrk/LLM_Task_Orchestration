@@ -90,6 +90,11 @@ async def models() -> dict[str, object]:
     }
 
 
+@app.get("/catalog/models")
+async def catalog_models() -> dict[str, object]:
+    return await controller.catalog()
+
+
 @app.get("/registry")
 async def backend_registry() -> dict[str, object]:
     return {"instances": [instance.to_dict() for instance in registry.list()]}
@@ -126,6 +131,8 @@ async def allocate(request: Request) -> JSONResponse:
     payload = await request.json()
     try:
         result = await controller.allocate(payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -365,6 +365,8 @@ async def resolve_upstream(
         try:
             backend = await backend_registry_client.ensure_allocation(model, orchestration)
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {403, 404, 409}:
+                return None, None
             logger.warning(
                 "backend_allocation_failed status=%s",
                 exc.response.status_code,
@@ -404,7 +406,13 @@ async def release_backend_lease(instance_id: str | None) -> None:
 
 
 def upstream_url(base_url: str, path: str) -> str:
-    return f"{base_url.rstrip('/')}/v1/{path.lstrip('/')}"
+    base = base_url.rstrip("/")
+    normalized_path = path.lstrip("/")
+    if base.endswith("/v1"):
+        if normalized_path.startswith("v1/"):
+            normalized_path = normalized_path[3:]
+        return f"{base}/{normalized_path}"
+    return f"{base}/v1/{normalized_path}"
 
 
 def upstream_headers(request: Request) -> dict[str, str]:

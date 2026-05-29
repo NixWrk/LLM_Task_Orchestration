@@ -2,7 +2,12 @@ from datetime import UTC, datetime, timedelta
 import asyncio
 from pathlib import Path
 
-from lifecycle.controller import LifecycleController, idle_seconds, openai_url
+from lifecycle.controller import (
+    LifecycleController,
+    dynamic_model_allowed,
+    idle_seconds,
+    openai_url,
+)
 from lifecycle.models import BackendInstance, GpuState
 from lifecycle.registry import BackendRegistry
 
@@ -81,3 +86,45 @@ def test_allocate_dynamic_lmstudio_model_registers_ready_backend(
     assert result["instance"]["model"] == "qwen/qwen3.5-9b"
     assert result["instance"]["base_url"] == "http://host.docker.internal:1234/v1"
     assert result["instance"]["state"] == "ready"
+
+
+def test_dynamic_model_allowed_honors_allow_and_deny_patterns() -> None:
+    config = {
+        "enabled": True,
+        "allowed_model_patterns": ["qwen*", "google/gemma-4-e2b"],
+        "denied_model_patterns": ["*embedding*"],
+    }
+
+    assert dynamic_model_allowed("qwen/qwen3.5-9b", config) is True
+    assert dynamic_model_allowed("google/gemma-4-e2b", config) is True
+    assert dynamic_model_allowed("text-embedding-bge-m3", config) is False
+    assert dynamic_model_allowed("mistralai/ministral-3-3b", config) is False
+
+
+def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "dynamic_models:",
+                "  enabled: true",
+                "  allowed_model_patterns: [qwen*]",
+                "  denied_model_patterns: []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    controller = LifecycleController(
+        config_path=str(config_path),
+        registry=BackendRegistry(str(tmp_path / "registry.json")),
+        gpu_inventory_url="http://gpu-inventory:4200",
+        request_timeout_seconds=1,
+        dry_run=True,
+    )
+
+    try:
+        asyncio.run(controller.allocate({"model": "mistralai/ministral-3-3b"}))
+    except PermissionError as exc:
+        assert "not allowed" in str(exc)
+    else:
+        raise AssertionError("Expected PermissionError")
