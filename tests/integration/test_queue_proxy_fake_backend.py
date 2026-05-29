@@ -286,6 +286,47 @@ def test_queue_proxy_routes_through_backend_registry(
     assert registry_response.json()["instances"][0]["active_requests"] == 0
 
 
+def test_queue_proxy_allocates_dynamic_model_through_backend_registry(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    registry_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path, dynamic_models_enabled=True)
+
+    with running_fake_backend(fake_port), running_fake_registry(
+        registry_port,
+        f"http://127.0.0.1:{fake_port}",
+    ), running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        registry_port=registry_port,
+        require_registry_backend=True,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            json={
+                "model": "qwen/qwen3.5-9b",
+                "messages": [{"role": "user", "content": "dynamic registry route"}],
+                "orchestration": {"gpu": "auto"},
+            },
+            timeout=5,
+        )
+        registry_response = httpx.get(
+            f"http://127.0.0.1:{registry_port}/registry",
+            timeout=5,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "qwen/qwen3.5-9b"
+    assert response.json()["choices"][0]["message"]["content"] == "ok"
+    assert registry_response.json()["instances"][0]["model"] == "qwen/qwen3.5-9b"
+    assert registry_response.json()["instances"][0]["active_requests"] == 0
+
+
 @contextmanager
 def running_fake_backend(port: int) -> Iterator[None]:
     env = service_env("services/fake_openai_backend")
@@ -404,6 +445,7 @@ def write_policy_config(
     max_output_tokens: int = 32,
     max_total_tokens: int = 256,
     backend_model: str = "local-main",
+    dynamic_models_enabled: bool = False,
 ) -> Path:
     config_path = tmp_path / "orchestrator.yaml"
     config_path.write_text(
@@ -419,6 +461,8 @@ def write_policy_config(
                 f"  max_total_tokens: {max_total_tokens}",
                 "  token_estimate_chars_per_token: 4",
                 "  output_over_limit_behavior: clamp",
+                "dynamic_models:",
+                f"  enabled: {str(dynamic_models_enabled).lower()}",
                 "models:",
                 "  local-main:",
                 "    public_name: local-main",

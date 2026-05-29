@@ -17,51 +17,94 @@ def load_model_profiles(path: str) -> dict[str, ModelProfile]:
     profiles: dict[str, ModelProfile] = {}
 
     for model_key, model_config in models.items():
-        model_data = {**defaults, **(model_config or {})}
-        lifecycle_data = model_data.get("lifecycle") or {}
-        public_name = str(model_data.get("public_name") or model_key)
-        estimated_vram_mb = vram_mb(
-            lifecycle_data.get("estimated_vram_gb", model_data.get("estimated_vram_gb", 0))
-        )
-        safety_margin_mb = vram_mb(
-            lifecycle_data.get("safety_margin_gb", model_data.get("safety_margin_gb", 1))
-        )
-        preferred_gpus = tuple(
-            str(gpu_id) for gpu_id in lifecycle_data.get("preferred_gpus", ["auto"])
-        )
-        profiles[public_name] = ModelProfile(
-            public_name=public_name,
-            backend_model=str(model_data.get("backend_model") or public_name),
-            runtime=str(lifecycle_data.get("runtime", model_data.get("runtime", "external"))),
-            artifact=optional_str(lifecycle_data.get("artifact", model_data.get("artifact"))),
-            runtime_image=optional_str(
-                lifecycle_data.get("runtime_image", model_data.get("runtime_image"))
-            ),
-            host_port_start=int(lifecycle_data.get("host_port_start", 8100)),
-            container_port=int(lifecycle_data.get("container_port", 8000)),
-            public_host=str(lifecycle_data.get("public_host", "host.docker.internal")),
-            base_url=optional_str(lifecycle_data.get("base_url", model_data.get("base_url"))),
-            docker_extra_args=string_tuple(lifecycle_data.get("docker_extra_args", [])),
-            runtime_extra_args=string_tuple(lifecycle_data.get("runtime_extra_args", [])),
-            volume_mounts=volume_mounts(lifecycle_data.get("volumes", [])),
-            environment=environment_variables(lifecycle_data.get("environment", {})),
-            healthcheck_path=str(lifecycle_data.get("healthcheck_path", "/v1/models")),
-            startup_timeout_seconds=float(lifecycle_data.get("startup_timeout_seconds", 120)),
-            healthcheck_interval_seconds=float(
-                lifecycle_data.get("healthcheck_interval_seconds", 2)
-            ),
-            warmup_enabled=bool(lifecycle_data.get("warmup_enabled", True)),
-            warmup_prompt=str(lifecycle_data.get("warmup_prompt", "Return exactly: ok")),
-            warmup_max_tokens=int(lifecycle_data.get("warmup_max_tokens", 8)),
-            estimated_vram_mb=estimated_vram_mb,
-            safety_margin_mb=safety_margin_mb,
-            min_replicas=int(lifecycle_data.get("min_replicas", 0)),
-            max_replicas=int(lifecycle_data.get("max_replicas", 1)),
-            idle_ttl_seconds=int(lifecycle_data.get("idle_ttl_seconds", 3600)),
-            preferred_gpus=preferred_gpus,
-        )
+        profile = model_profile_from_data(model_key, model_config or {}, defaults)
+        profiles[profile.public_name] = profile
 
     return profiles
+
+
+def load_dynamic_model_profile(
+    path: str,
+    model: str,
+    overrides: dict[str, Any] | None = None,
+) -> ModelProfile | None:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+
+    dynamic_models = raw.get("dynamic_models") or {}
+    if not bool(dynamic_models.get("enabled", False)):
+        return None
+
+    defaults = raw.get("defaults") or {}
+    model_config = {
+        **dynamic_models,
+        **(overrides or {}),
+        "public_name": model,
+        "backend_model": model,
+    }
+    lifecycle_defaults = dynamic_models.get("lifecycle") or {}
+    lifecycle_overrides = (overrides or {}).get("lifecycle") or {}
+    model_config["lifecycle"] = {
+        "runtime": "lmstudio",
+        "base_url": "http://host.docker.internal:1234/v1",
+        "estimated_vram_gb": 8,
+        "safety_margin_gb": 1,
+        "min_replicas": 0,
+        "max_replicas": 1,
+        "idle_ttl_seconds": 900,
+        "preferred_gpus": ["auto"],
+        **lifecycle_defaults,
+        **lifecycle_overrides,
+    }
+    return model_profile_from_data(model, model_config, defaults)
+
+
+def model_profile_from_data(
+    model_key: str,
+    model_config: dict[str, Any],
+    defaults: dict[str, Any],
+) -> ModelProfile:
+    model_data = {**defaults, **model_config}
+    lifecycle_data = model_data.get("lifecycle") or {}
+    public_name = str(model_data.get("public_name") or model_key)
+    estimated_vram_mb = vram_mb(
+        lifecycle_data.get("estimated_vram_gb", model_data.get("estimated_vram_gb", 0))
+    )
+    safety_margin_mb = vram_mb(
+        lifecycle_data.get("safety_margin_gb", model_data.get("safety_margin_gb", 1))
+    )
+    preferred_gpus = tuple(
+        str(gpu_id) for gpu_id in lifecycle_data.get("preferred_gpus", ["auto"])
+    )
+    return ModelProfile(
+        public_name=public_name,
+        backend_model=str(model_data.get("backend_model") or public_name),
+        runtime=str(lifecycle_data.get("runtime", model_data.get("runtime", "external"))),
+        artifact=optional_str(lifecycle_data.get("artifact", model_data.get("artifact"))),
+        runtime_image=optional_str(
+            lifecycle_data.get("runtime_image", model_data.get("runtime_image"))
+        ),
+        host_port_start=int(lifecycle_data.get("host_port_start", 8100)),
+        container_port=int(lifecycle_data.get("container_port", 8000)),
+        public_host=str(lifecycle_data.get("public_host", "host.docker.internal")),
+        base_url=optional_str(lifecycle_data.get("base_url", model_data.get("base_url"))),
+        docker_extra_args=string_tuple(lifecycle_data.get("docker_extra_args", [])),
+        runtime_extra_args=string_tuple(lifecycle_data.get("runtime_extra_args", [])),
+        volume_mounts=volume_mounts(lifecycle_data.get("volumes", [])),
+        environment=environment_variables(lifecycle_data.get("environment", {})),
+        healthcheck_path=str(lifecycle_data.get("healthcheck_path", "/v1/models")),
+        startup_timeout_seconds=float(lifecycle_data.get("startup_timeout_seconds", 120)),
+        healthcheck_interval_seconds=float(lifecycle_data.get("healthcheck_interval_seconds", 2)),
+        warmup_enabled=bool(lifecycle_data.get("warmup_enabled", True)),
+        warmup_prompt=str(lifecycle_data.get("warmup_prompt", "Return exactly: ok")),
+        warmup_max_tokens=int(lifecycle_data.get("warmup_max_tokens", 8)),
+        estimated_vram_mb=estimated_vram_mb,
+        safety_margin_mb=safety_margin_mb,
+        min_replicas=int(lifecycle_data.get("min_replicas", 0)),
+        max_replicas=int(lifecycle_data.get("max_replicas", 1)),
+        idle_ttl_seconds=int(lifecycle_data.get("idle_ttl_seconds", 3600)),
+        preferred_gpus=preferred_gpus,
+    )
 
 
 def vram_mb(value: Any) -> int:

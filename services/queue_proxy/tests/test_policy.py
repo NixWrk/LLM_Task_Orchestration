@@ -2,7 +2,9 @@ import pytest
 
 from queue_proxy.policy import (
     ModelPolicy,
+    PolicyRegistry,
     TokenBudgetExceeded,
+    apply_orchestration_overrides,
     apply_token_policy,
     extract_model,
     strip_internal_fields,
@@ -65,6 +67,33 @@ def test_apply_token_policy_rejects_too_large_input() -> None:
 
 
 def test_strip_internal_fields_removes_orchestrator_metadata() -> None:
-    assert strip_internal_fields({"model": "local-main", "_orchestrator": {}}) == {
+    assert strip_internal_fields(
+        {"model": "local-main", "_orchestrator": {}, "orchestration": {"gpu": "auto"}}
+    ) == {
         "model": "local-main"
     }
+
+
+def test_policy_registry_builds_dynamic_policy_for_requested_model() -> None:
+    registry = PolicyRegistry({"local-main": policy()}, policy(), dynamic_models_enabled=True)
+
+    resolved = registry.resolve("qwen/qwen3.5-9b")
+
+    assert resolved.public_name == "qwen/qwen3.5-9b"
+    assert resolved.backend_model == "qwen/qwen3.5-9b"
+    assert resolved.max_active_requests == policy().max_active_requests
+
+
+def test_apply_orchestration_overrides_can_lower_request_limits() -> None:
+    resolved = apply_orchestration_overrides(
+        policy(),
+        {
+            "max_parallel": 3,
+            "max_queued_requests": 1,
+            "tokens": {"max_output_tokens": 32},
+        },
+    )
+
+    assert resolved.max_active_requests == 1
+    assert resolved.max_queued_requests == 1
+    assert resolved.max_output_tokens == 32

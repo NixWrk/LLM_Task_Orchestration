@@ -9,6 +9,20 @@ defaults:
   token_estimate_chars_per_token: 4
   output_over_limit_behavior: clamp
 
+dynamic_models:
+  enabled: true
+  source: lmstudio
+  lifecycle:
+    runtime: lmstudio
+    base_url: http://host.docker.internal:1234/v1
+    estimated_vram_gb: 8
+    safety_margin_gb: 1
+    min_replicas: 0
+    max_replicas: 1
+    idle_ttl_seconds: 900
+    preferred_gpus:
+      - auto
+
 gpus:
   - id: gpu0
     name: auto

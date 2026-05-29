@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from lifecycle.adapters import adapter_for
-from lifecycle.config import load_model_profiles
+from lifecycle.config import load_dynamic_model_profile, load_model_profiles
 from lifecycle.models import (
     BackendInstance,
     GpuState,
@@ -39,6 +39,16 @@ class LifecycleController:
 
     def profiles(self) -> dict[str, ModelProfile]:
         return load_model_profiles(self.config_path)
+
+    def profile_for_model(
+        self,
+        model: str,
+        overrides: dict[str, Any] | None = None,
+    ) -> ModelProfile | None:
+        profiles = self.profiles()
+        if model in profiles:
+            return profiles[model]
+        return load_dynamic_model_profile(self.config_path, model, overrides)
 
     async def gpu_states(self) -> list[GpuState]:
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
@@ -128,6 +138,47 @@ class LifecycleController:
         plan["stopped_instances"] = stopped
         return plan
 
+    async def allocate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        model = str(payload.get("model") or "").strip()
+        if not model:
+            raise ValueError("Allocation requires a non-empty model.")
+
+        overrides = allocation_overrides(payload)
+        profile = self.profile_for_model(model, overrides)
+        if profile is None:
+            raise LookupError(f"Model {model} is not configured and dynamic models are disabled.")
+
+        ready_instances = self.registry.ready_for_model(profile.public_name)
+        if ready_instances:
+            instance = min(ready_instances, key=lambda item: item.active_requests)
+            return {
+                "model": profile.public_name,
+                "created": False,
+                "instance": instance.to_dict(),
+            }
+
+        await self.verify_model_available(profile)
+        gpus = await self.gpu_states()
+        decision = choose_gpu(profile, gpus, self.registry)
+        if decision.action != "start" or not decision.gpu_id:
+            return {
+                "model": profile.public_name,
+                "created": False,
+                "decision": decision.to_dict(),
+                "instance": None,
+            }
+
+        gpu_by_id = {gpu.id: gpu for gpu in gpus}
+        instance = self.start_instance(profile, decision.to_dict(), gpu_by_id)
+        self.registry.upsert(instance)
+        instance = await self.initialize_instance(profile, instance)
+        return {
+            "model": profile.public_name,
+            "created": instance.state == "ready",
+            "decision": decision.to_dict(),
+            "instance": instance.to_dict(),
+        }
+
     def start_instance(
         self,
         profile: ModelProfile,
@@ -148,7 +199,7 @@ class LifecycleController:
             instance_id,
             reserved_vram_mb,
         )
-        if self.dry_run:
+        if instance.dry_run:
             instance.base_url = f"dry-run://{profile.public_name}/{instance_id}"
         elif profile.runtime == "vllm":
             instance.base_url = f"http://{profile.public_host}:{host_port}/v1"
@@ -205,6 +256,28 @@ class LifecycleController:
             )
             response.raise_for_status()
 
+    async def verify_model_available(self, profile: ModelProfile) -> None:
+        if profile.runtime not in {"lmstudio", "openai-compatible", "external"}:
+            return
+        if not profile.base_url:
+            raise ValueError(f"Model {profile.public_name} has no base_url.")
+
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+            response = await client.get(openai_url(profile.base_url, "/v1/models"))
+            response.raise_for_status()
+            payload = response.json()
+
+        raw_models = payload.get("data", [])
+        if not isinstance(raw_models, list):
+            return
+        model_ids = {
+            str(item.get("id"))
+            for item in raw_models
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        if profile.backend_model not in model_ids:
+            raise LookupError(f"Model {profile.backend_model} is not visible at {profile.base_url}.")
+
     async def stop_idle_instances(
         self,
         profiles: dict[str, ModelProfile],
@@ -259,6 +332,35 @@ def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     return {str(model): int(length) for model, length in raw.items()}
+
+
+def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
+    orchestration = payload.get("orchestration")
+    if not isinstance(orchestration, dict):
+        orchestration = {}
+
+    lifecycle: dict[str, Any] = {}
+    for source_key, target_key in (
+        ("runtime", "runtime"),
+        ("base_url", "base_url"),
+        ("estimated_vram_gb", "estimated_vram_gb"),
+        ("safety_margin_gb", "safety_margin_gb"),
+        ("preferred_gpus", "preferred_gpus"),
+        ("idle_ttl_seconds", "idle_ttl_seconds"),
+        ("min_replicas", "min_replicas"),
+        ("max_replicas", "max_replicas"),
+        ("warmup_enabled", "warmup_enabled"),
+        ("warmup_prompt", "warmup_prompt"),
+        ("warmup_max_tokens", "warmup_max_tokens"),
+    ):
+        if source_key in orchestration:
+            lifecycle[target_key] = orchestration[source_key]
+
+    if "gpu" in orchestration and "preferred_gpus" not in lifecycle:
+        gpu = orchestration["gpu"]
+        lifecycle["preferred_gpus"] = gpu if isinstance(gpu, list) else [gpu]
+
+    return {"lifecycle": lifecycle} if lifecycle else {}
 
 
 async def async_sleep(seconds: float) -> None:

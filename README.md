@@ -55,6 +55,8 @@ For a repeatable local preparation run that installs Python dependencies, pulls 
 
 If you already have models downloaded in LM Studio, use [LM Studio Models](docs/LM_STUDIO_MODELS.md) to discover model ids and map them into the orchestrator.
 
+Applications can request any allowed LM Studio model dynamically through the queue proxy; see [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
+
 ## Configure LM Studio
 
 Start the LM Studio server on port `1234`.
@@ -182,6 +184,8 @@ The GPU management layer can run in either dry-run or real Docker mode. Dry-run 
 
 For the external contract other programs should use to request capacity, model startup, GPU constraints, and task-specific limits, see [Resource Request API](docs/RESOURCE_REQUEST_API.md).
 
+The implemented dynamic request path is documented in [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
+
 For real vLLM container launching, Docker socket deployment, healthcheck/warmup, and idle stop behavior, see [Docker vLLM Runtime Adapter](docs/DOCKER_VLLM_RUNTIME.md).
 
 GPU inventory:
@@ -221,6 +225,8 @@ Queue proxy can use ready HTTP backends from the lifecycle registry:
 ```text
 ENABLE_BACKEND_REGISTRY_ROUTING=true
 ```
+
+When registry routing is enabled and no ready backend exists for a requested dynamic model, queue proxy calls lifecycle `POST /allocations` before forwarding the request.
 
 By default it falls back to `UPSTREAM_LITELLM_BASE_URL` when the registry has no ready HTTP backend. To force registry-only routing:
 
@@ -331,6 +337,7 @@ Implemented now:
 - Active request lease/release accounting between queue proxy and lifecycle registry.
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Lifecycle support for already-running LM Studio/OpenAI-compatible backends.
+- Dynamic model allocation from request payloads through lifecycle `POST /allocations`.
 - Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.
 - Real-run preparation script and documentation.
 - Environment-driven settings.

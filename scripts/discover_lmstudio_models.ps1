@@ -29,19 +29,19 @@ function Add-Model {
 
   $CleanId = $Id.Trim()
   if (-not $ModelsById.ContainsKey($CleanId)) {
-    $ModelsById[$CleanId] = [ordered]@{
+    $ModelsById[$CleanId] = [pscustomobject]@{
       id = $CleanId
       sources = @()
       paths = @()
     }
   }
 
-  if ($ModelsById[$CleanId]["sources"] -notcontains $Source) {
-    $ModelsById[$CleanId]["sources"] += $Source
+  if ($ModelsById[$CleanId].sources -notcontains $Source) {
+    $ModelsById[$CleanId].sources += $Source
   }
 
-  if ($Path -and $ModelsById[$CleanId]["paths"] -notcontains $Path) {
-    $ModelsById[$CleanId]["paths"] += $Path
+  if ($Path -and $ModelsById[$CleanId].paths -notcontains $Path) {
+    $ModelsById[$CleanId].paths += $Path
   }
 }
 
@@ -78,7 +78,7 @@ function Add-IdsFromObject {
     $PropertyValue = $Property.Value
     if (
       $PropertyValue -is [System.Array] -or
-      ($null -ne $PropertyValue -and -not ($PropertyValue -is [string]) -and $PropertyValue.PSObject.Properties.Count -gt 0)
+      ($null -ne $PropertyValue -and -not ($PropertyValue -is [string]) -and @($PropertyValue.PSObject.Properties).Count -gt 0)
     ) {
       Add-IdsFromObject -Value $PropertyValue -Source $Source
     }

@@ -42,6 +42,28 @@ class BackendRegistryClient:
             return None
         return min(candidates, key=lambda instance: instance.active_requests)
 
+    async def ensure_allocation(
+        self,
+        model: str,
+        orchestration: dict[str, Any] | None = None,
+    ) -> BackendInstance | None:
+        payload: dict[str, Any] = {"model": model}
+        if orchestration:
+            payload["orchestration"] = orchestration
+
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(f"{self.registry_url}/allocations", json=payload)
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            data = response.json()
+
+        instance = data.get("instance")
+        if not isinstance(instance, dict):
+            return None
+        parsed = parse_registry_instances({"instances": [instance]})
+        return parsed[0] if parsed else None
+
     async def lease_backend(self, instance_id: str) -> None:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(f"{self.registry_url}/registry/{instance_id}/lease")

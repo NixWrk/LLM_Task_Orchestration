@@ -138,12 +138,12 @@ class ExternalOpenAIAdapter:
 
 
 def adapter_for(profile: ModelProfile, dry_run: bool, docker_binary: str) -> RuntimeAdapter:
+    if profile.runtime in {"external", "lmstudio", "openai-compatible"}:
+        return ExternalOpenAIAdapter()
     if dry_run:
         return DryRunAdapter()
     if profile.runtime == "vllm":
         return DockerVllmAdapter(docker_binary)
-    if profile.runtime in {"external", "lmstudio", "openai-compatible"}:
-        return ExternalOpenAIAdapter()
     return DryRunAdapter()
 
 

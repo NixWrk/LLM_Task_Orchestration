@@ -5,7 +5,7 @@ import json
 import logging
 from contextlib import suppress
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from lifecycle.controller import LifecycleController, queue_lengths_from_payload
@@ -118,6 +118,21 @@ async def plan(request: Request) -> JSONResponse:
 async def reconcile(request: Request) -> JSONResponse:
     payload = await request.json()
     result = await controller.reconcile(queue_lengths_from_payload(payload))
+    return JSONResponse(result)
+
+
+@app.post("/allocations")
+async def allocate(request: Request) -> JSONResponse:
+    payload = await request.json()
+    try:
+        result = await controller.allocate(payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if result.get("instance") is None:
+        return JSONResponse(result, status_code=409)
     return JSONResponse(result)
 
 

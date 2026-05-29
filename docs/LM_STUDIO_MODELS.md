@@ -118,3 +118,5 @@ Add one `models.<name>` block per public model in `config/orchestrator.yaml`. Us
 - Larger models: reserve enough VRAM for context, KV cache, and batching.
 
 LM Studio itself decides how the model is loaded. The orchestrator controls admission, queues, token budgets, health/warmup, and routing. For hard multi-replica GPU placement, use the Docker vLLM adapter described in [Docker vLLM Runtime Adapter](DOCKER_VLLM_RUNTIME.md).
+
+For application-side request examples where the app names the model and asks for GPU/token/concurrency constraints, see [Dynamic Model Allocation](DYNAMIC_MODEL_ALLOCATION.md).

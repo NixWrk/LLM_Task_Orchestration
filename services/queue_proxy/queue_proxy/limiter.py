@@ -78,6 +78,16 @@ class ModelLimiter:
             self._active_requests = max(0, self._active_requests - 1)
             self._condition.notify_all()
 
+    def update_limits(
+        self,
+        max_active_requests: int,
+        max_queued_requests: int,
+        queue_timeout_seconds: float,
+    ) -> None:
+        self.max_active_requests = max_active_requests
+        self.max_queued_requests = max_queued_requests
+        self.queue_timeout_seconds = queue_timeout_seconds
+
     def snapshot(self) -> LimiterSnapshot:
         return LimiterSnapshot(
             model=self.model,
@@ -102,6 +112,12 @@ class LimiterRegistry:
         if model not in self._limiters:
             self._limiters[model] = ModelLimiter(
                 model,
+                max_active_requests,
+                max_queued_requests,
+                queue_timeout_seconds,
+            )
+        else:
+            self._limiters[model].update_limits(
                 max_active_requests,
                 max_queued_requests,
                 queue_timeout_seconds,

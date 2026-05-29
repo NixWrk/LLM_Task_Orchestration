@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from lifecycle.config import load_model_profiles
+from lifecycle.config import load_dynamic_model_profile, load_model_profiles
 from lifecycle.models import BackendInstance, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
 from lifecycle.scheduler import choose_gpu, desired_replicas
@@ -143,3 +143,32 @@ def test_load_model_profiles_reads_lifecycle_config(tmp_path: Path) -> None:
     assert profiles["qwen"].base_url == "http://host.docker.internal:1234/v1"
     assert profiles["qwen"].volume_mounts[0].host_path == "D:/models/qwen"
     assert profiles["qwen"].environment[0].name == "HF_HOME"
+
+
+def test_load_dynamic_model_profile_uses_lmstudio_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "defaults:",
+                "  max_active_requests: 1",
+                "dynamic_models:",
+                "  enabled: true",
+                "  lifecycle:",
+                "    base_url: http://host.docker.internal:1234/v1",
+                "    estimated_vram_gb: 9",
+                "    preferred_gpus: [gpu1]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    profile = load_dynamic_model_profile(str(config_path), "qwen/qwen3.5-9b")
+
+    assert profile is not None
+    assert profile.public_name == "qwen/qwen3.5-9b"
+    assert profile.backend_model == "qwen/qwen3.5-9b"
+    assert profile.runtime == "lmstudio"
+    assert profile.base_url == "http://host.docker.internal:1234/v1"
+    assert profile.estimated_vram_mb == 9 * 1024
+    assert profile.preferred_gpus == ("gpu1",)

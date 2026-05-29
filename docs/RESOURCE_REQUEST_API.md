@@ -13,6 +13,8 @@ The short version:
 
 Today the implemented API is split across two services.
 
+For the concrete request format now supported by queue proxy and lifecycle `POST /allocations`, see [Dynamic Model Allocation](DYNAMIC_MODEL_ALLOCATION.md).
+
 ### 1. Ask Lifecycle To Plan Or Reconcile
 
 Lifecycle can plan or create dry-run backend instances based on queue pressure:
@@ -105,9 +107,9 @@ The queue proxy enforces:
 - input/output/total token budgets;
 - optional routing through lifecycle backend registry.
 
-## Target Capacity Allocation API
+## Capacity Allocation API
 
-The next stable external contract should add explicit allocation endpoints to lifecycle.
+Lifecycle now exposes `POST /allocations` for dynamic LM Studio/OpenAI-compatible model allocation. The broader contract below is the long-form shape for service/task-aware reservations; unsupported fields should currently be treated as future metadata unless they also appear in [Dynamic Model Allocation](DYNAMIC_MODEL_ALLOCATION.md).
 
 ### Request Capacity
 

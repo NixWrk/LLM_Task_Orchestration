@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 app = FastAPI(title="fake backend registry")
 active_requests = int(os.environ.get("FAKE_REGISTRY_ACTIVE_REQUESTS", "0"))
+allocated_model = os.environ.get("FAKE_REGISTRY_MODEL", "local-main")
 
 
 @app.get("/health")
@@ -19,12 +20,30 @@ async def registry() -> dict[str, object]:
         "instances": [
             {
                 "instance_id": "fake-ready",
-                "model": os.environ.get("FAKE_REGISTRY_MODEL", "local-main"),
+                "model": allocated_model,
                 "base_url": os.environ["FAKE_REGISTRY_BACKEND_URL"],
                 "state": "ready",
                 "active_requests": active_requests,
             }
         ]
+    }
+
+
+@app.post("/allocations")
+async def allocations(request: Request) -> dict[str, object]:
+    global allocated_model
+    payload = await request.json()
+    allocated_model = str(payload["model"])
+    return {
+        "model": allocated_model,
+        "created": True,
+        "instance": {
+            "instance_id": "fake-ready",
+            "model": allocated_model,
+            "base_url": os.environ["FAKE_REGISTRY_BACKEND_URL"],
+            "state": "ready",
+            "active_requests": active_requests,
+        },
     }
 
 

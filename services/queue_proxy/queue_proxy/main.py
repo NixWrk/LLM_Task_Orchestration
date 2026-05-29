@@ -24,6 +24,8 @@ from queue_proxy.metrics import (
 from queue_proxy.policy import (
     PolicyError,
     PolicyRegistry,
+    ModelPolicy,
+    apply_orchestration_overrides,
     apply_token_policy,
     extract_model,
     load_policy_registry,
@@ -122,12 +124,12 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             return auth_result
 
     body = await request.body()
-    payload, policy_metadata = prepare_payload(path, request, body)
+    payload, policy_metadata, effective_policy = prepare_payload(path, request, body)
 
     if payload is None:
         return await forward_without_limiter(path, request, body)
 
-    policy = policy_registry.resolve(extract_model(payload))
+    policy = effective_policy or policy_registry.resolve(extract_model(payload))
     limiter = limiter_registry.get_or_create(
         policy.public_name,
         policy.max_active_requests,
@@ -159,7 +161,12 @@ async def forward_openai_path(path: str, request: Request) -> Response:
     backend_instance_id: str | None = None
 
     try:
-        upstream_base_url, backend_instance_id = await resolve_upstream(policy.public_name)
+        orchestration = payload.get("orchestration")
+        orchestration_payload = orchestration if isinstance(orchestration, dict) else None
+        upstream_base_url, backend_instance_id = await resolve_upstream(
+            policy.public_name,
+            orchestration_payload,
+        )
         if upstream_base_url is None:
             await limiter.release()
             record_limiter_snapshot(limiter)
@@ -230,16 +237,16 @@ def prepare_payload(
     path: str,
     request: Request,
     body: bytes,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+) -> tuple[dict[str, Any] | None, dict[str, Any], ModelPolicy | None]:
     if request.method.upper() != "POST":
-        return None, {}
+        return None, {}, None
 
     content_type = request.headers.get("content-type", "")
     if "application/json" not in content_type:
-        return None, {}
+        return None, {}, None
 
     if not is_llm_generation_endpoint(path):
-        return None, {}
+        return None, {}, None
 
     try:
         raw_payload = json.loads(body.decode("utf-8"))
@@ -250,9 +257,10 @@ def prepare_payload(
         raise PolicyError("JSON request body must be an object.", "invalid_json")
 
     policy = policy_registry.resolve(extract_model(raw_payload))
+    policy = apply_orchestration_overrides(policy, raw_payload.get("orchestration"))
     payload = apply_token_policy(raw_payload, policy)
     metadata = dict(payload.get("_orchestrator") or {})
-    return payload, metadata
+    return payload, metadata, policy
 
 
 def is_llm_generation_endpoint(path: str) -> bool:
@@ -338,7 +346,10 @@ async def stream_upstream_response(
     )
 
 
-async def resolve_upstream(model: str) -> tuple[str | None, str | None]:
+async def resolve_upstream(
+    model: str,
+    orchestration: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
     if not settings.enable_backend_registry_routing or backend_registry_client is None:
         return settings.upstream_base_url, None
 
@@ -351,9 +362,26 @@ async def resolve_upstream(model: str) -> tuple[str | None, str | None]:
         return settings.upstream_base_url, None
 
     if backend is None:
-        if settings.require_backend_registry_backend:
-            return None, None
-        return settings.upstream_base_url, None
+        try:
+            backend = await backend_registry_client.ensure_allocation(model, orchestration)
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "backend_allocation_failed status=%s",
+                exc.response.status_code,
+            )
+            if settings.require_backend_registry_backend:
+                return None, None
+            return settings.upstream_base_url, None
+        except httpx.HTTPError as exc:
+            logger.warning("backend_allocation_failed error_type=%s", type(exc).__name__)
+            if settings.require_backend_registry_backend:
+                return None, None
+            return settings.upstream_base_url, None
+
+        if backend is None or not backend.is_ready:
+            if settings.require_backend_registry_backend:
+                return None, None
+            return settings.upstream_base_url, None
 
     try:
         await backend_registry_client.lease_backend(backend.instance_id)
