@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 from tests.integration.support import (
     running_fake_backend,
@@ -269,6 +271,69 @@ def test_queue_proxy_routes_through_backend_registry(
     assert response.json()["model"] == "actual-main"
     assert response.json()["choices"][0]["message"]["content"] == "ok"
     assert registry_response.json()["instances"][0]["active_requests"] == 0
+
+
+def test_client_timeout_before_upstream_headers_releases_registry_lease(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    registry_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path, backend_model="actual-main")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.ReadTimeout):
+                await client.post(
+                    f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+                    headers={"x-fake-delay-ms": "5000"},
+                    json={
+                        "model": "local-main",
+                        "messages": [{"role": "user", "content": "slow registry route"}],
+                    },
+                    timeout=0.2,
+                )
+
+            deadline = time.monotonic() + 3
+            last_registry_active = None
+            last_proxy_active = None
+            while time.monotonic() < deadline:
+                registry_response = await client.get(
+                    f"http://127.0.0.1:{registry_port}/registry",
+                    timeout=1,
+                )
+                proxy_status = await client.get(
+                    f"http://127.0.0.1:{proxy_port}/status",
+                    timeout=1,
+                )
+                last_registry_active = registry_response.json()["instances"][0][
+                    "active_requests"
+                ]
+                proxy_models = proxy_status.json().get("models", [])
+                last_proxy_active = proxy_models[0]["active_requests"] if proxy_models else 0
+                if last_registry_active == 0 and last_proxy_active == 0:
+                    return
+                await asyncio.sleep(0.05)
+
+            raise AssertionError(
+                "request lease was not released after client timeout: "
+                f"registry={last_registry_active} proxy={last_proxy_active}"
+            )
+
+    with running_fake_backend(fake_port), running_fake_registry(
+        registry_port,
+        f"http://127.0.0.1:{fake_port}/v1",
+    ), running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        registry_port=registry_port,
+        require_registry_backend=True,
+        request_timeout_seconds=10,
+    ):
+        asyncio.run(scenario())
 
 
 def test_queue_proxy_allocates_dynamic_model_through_backend_registry(

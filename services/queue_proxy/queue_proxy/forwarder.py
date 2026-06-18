@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -15,6 +17,10 @@ from queue_proxy.http_proxy import (
 from queue_proxy.responses import error_response
 
 StreamFinishedCallback = Callable[[int], Awaitable[None]]
+
+
+class ClientDisconnectedError(Exception):
+    pass
 
 
 class UpstreamForwarder:
@@ -69,9 +75,31 @@ class UpstreamForwarder:
             content=body,
             params=request.query_params,
         )
+        send_task = asyncio.create_task(client.send(upstream_request, stream=True))
+        disconnect_task = asyncio.create_task(wait_for_client_disconnect(request))
         try:
-            upstream_response = await client.send(upstream_request, stream=True)
+            done, _pending = await asyncio.wait(
+                {send_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if disconnect_task in done:
+                send_task.cancel()
+                with suppress(BaseException):
+                    await send_task
+                await client.aclose()
+                raise ClientDisconnectedError
+
+            disconnect_task.cancel()
+            with suppress(BaseException):
+                await disconnect_task
+            upstream_response = send_task.result()
         except Exception:
+            disconnect_task.cancel()
+            send_task.cancel()
+            with suppress(BaseException):
+                await disconnect_task
+            with suppress(BaseException):
+                await send_task
             await client.aclose()
             raise
 
@@ -94,3 +122,10 @@ class UpstreamForwarder:
 
     def upstream_headers(self, request: Request) -> dict[str, str]:
         return build_upstream_headers(request.headers, self.upstream_api_key)
+
+
+async def wait_for_client_disconnect(request: Request) -> None:
+    while True:
+        if await request.is_disconnected():
+            return
+        await asyncio.sleep(0.05)

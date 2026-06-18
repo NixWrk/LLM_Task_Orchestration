@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from orchestrator_core.logging import configure_json_logging
 
 from queue_proxy.backend_registry import BackendRegistryClient
-from queue_proxy.forwarder import UpstreamForwarder
+from queue_proxy.forwarder import ClientDisconnectedError, UpstreamForwarder
 from queue_proxy.limiter import LimiterRegistry, QueueFull, QueueTimeout
 from queue_proxy.metrics import (
     CONTENT_TYPE_LATEST,
@@ -138,6 +138,25 @@ async def forward_openai_path(path: str, request: Request) -> Response:
 
     record_limiter_snapshot(limiter)
     backend_instance_id: str | None = None
+    released = False
+
+    async def release_once(status_code: int | None = None) -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        await backend_resolver.release(backend_instance_id)
+        await limiter.release()
+        record_limiter_snapshot(limiter)
+        if status_code is not None:
+            REQUESTS.labels(
+                model=policy.public_name,
+                endpoint=endpoint,
+                status=str(status_code),
+            ).inc()
+            LATENCY.labels(model=policy.public_name, endpoint=endpoint).observe(
+                perf_counter() - started_at
+            )
 
     try:
         orchestration = payload.get("orchestration")
@@ -165,14 +184,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
             request=request,
             body=clean_body,
             upstream_base_url=upstream_base_url,
-            on_finished=lambda status_code: finish_upstream_response(
-                backend_instance_id,
-                limiter,
-                policy.public_name,
-                endpoint,
-                status_code,
-                started_at,
-            ),
+            on_finished=release_once,
         )
 
         if policy_metadata:
@@ -187,20 +199,22 @@ async def forward_openai_path(path: str, request: Request) -> Response:
 
         return response
     except httpx.HTTPError as exc:
-        await backend_resolver.release(backend_instance_id)
-        await limiter.release()
-        record_limiter_snapshot(limiter)
+        await release_once(502)
         ERRORS.labels(model=policy.public_name, error_type=type(exc).__name__).inc()
-        REQUESTS.labels(model=policy.public_name, endpoint=endpoint, status="502").inc()
-        LATENCY.labels(model=policy.public_name, endpoint=endpoint).observe(
-            perf_counter() - started_at
-        )
         logger.warning("upstream_request_failed error_type=%s", type(exc).__name__)
         return error_response(
             status.HTTP_502_BAD_GATEWAY,
             "upstream_request_failed",
             "Upstream LLM gateway request failed.",
         )
+    except ClientDisconnectedError:
+        await release_once(499)
+        ERRORS.labels(model=policy.public_name, error_type="client_disconnected").inc()
+        logger.info("client_disconnected_before_upstream_response")
+        return Response(status_code=499)
+    except BaseException:
+        await release_once()
+        raise
 
 
 def validate_proxy_auth(request: Request) -> JSONResponse | None:

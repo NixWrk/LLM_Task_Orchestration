@@ -67,12 +67,13 @@ def running_queue_proxy(
     config_path: Path,
     registry_port: int | None = None,
     require_registry_backend: bool = False,
+    request_timeout_seconds: float = 1,
 ) -> Iterator[None]:
     env = service_env("services/queue_proxy")
     env["QUEUE_PROXY_CONFIG_PATH"] = str(config_path)
     env["UPSTREAM_LITELLM_BASE_URL"] = f"http://127.0.0.1:{upstream_port}"
     env["LITELLM_MASTER_KEY"] = "test-key"
-    env["REQUEST_TIMEOUT_SECONDS"] = "1"
+    env["REQUEST_TIMEOUT_SECONDS"] = str(request_timeout_seconds)
     if registry_port is not None:
         env["BACKEND_REGISTRY_URL"] = f"http://127.0.0.1:{registry_port}"
         env["ENABLE_BACKEND_REGISTRY_ROUTING"] = "true"
