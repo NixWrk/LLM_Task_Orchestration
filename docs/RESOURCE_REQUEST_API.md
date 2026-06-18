@@ -378,3 +378,39 @@ The full task-aware allocation object in this document is still the target contr
 - OpenAI-compatible `/v1/...` queue proxy endpoints
 
 The next implementation step is to add persistent allocation IDs and service/task ownership on top of the implemented dynamic model allocation path.
+
+## Zotero HTML Translation Contract
+
+`zotero-html-translate-worker` is an ordinary OpenAI-compatible client. It owns
+HTML segmentation, prompts, quality checks, and result files, but it does not
+start, load, unload, or discover LM Studio models. It sends translation calls to
+the queue proxy:
+
+```http
+POST http://localhost:4100/v1/chat/completions
+```
+
+The request names the desired model/profile and passes task hints in
+`orchestration`:
+
+```json
+{
+  "model": "p6_google_gemma-4-26b-a4b@q6_k",
+  "messages": [{"role": "user", "content": "..."}],
+  "temperature": 0.0,
+  "max_tokens": 1024,
+  "stream": false,
+  "orchestration": {
+    "project": "zotero",
+    "task": "html_translate",
+    "lms_context_length": 32768,
+    "estimated_vram_gb": 20,
+    "idle_ttl_seconds": 900,
+    "lms_ttl_seconds": 3600
+  }
+}
+```
+
+Queue proxy strips `orchestration` before forwarding to the backend. Lifecycle
+uses it only as bounded allocation metadata, so other projects can use the same
+contract with their own `project`, `task`, model, and resource hints.

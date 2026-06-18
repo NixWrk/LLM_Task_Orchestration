@@ -76,3 +76,45 @@ models:
       idle_ttl_seconds: 3600
       preferred_gpus:
         - auto
+
+  zotero-html-translate:
+    public_name: zotero-html-translate
+    backend_model: p6_google_gemma-4-26b-a4b@q6_k
+    aliases:
+      - p6_google_gemma-4-26b-a4b@q6_k
+      - gemma4_26b_run
+    max_active_requests: 1
+    max_queued_requests: 64
+    queue_timeout_seconds: 900
+    default_max_output_tokens: 1024
+    max_input_tokens: 32768
+    max_output_tokens: 8192
+    max_total_tokens: 40960
+    lifecycle:
+      runtime: lmstudio
+      artifact: null
+      runtime_image: null
+      base_url: http://host.docker.internal:1234/v1
+      host_port_start: 8100
+      container_port: 8000
+      public_host: host.docker.internal
+      volumes: []
+      environment: {}
+      docker_extra_args: []
+      runtime_extra_args: []
+      healthcheck_path: /v1/models
+      startup_timeout_seconds: 120
+      healthcheck_interval_seconds: 2
+      warmup_enabled: true
+      warmup_prompt: "Return exactly: ok"
+      warmup_max_tokens: 8
+      estimated_vram_gb: 20
+      safety_margin_gb: 1
+      min_replicas: 0
+      max_replicas: 1
+      idle_ttl_seconds: 900
+      lms_context_length: 32768
+      lms_parallel: 1
+      lms_ttl_seconds: 3600
+      preferred_gpus:
+        - auto
