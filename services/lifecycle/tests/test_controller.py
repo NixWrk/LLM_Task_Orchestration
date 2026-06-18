@@ -114,6 +114,7 @@ def test_allocation_overrides_map_max_parallel_to_lmstudio_parallel() -> None:
                 "max_parallel": 2,
                 "lms_gpu": "max",
                 "lms_context_length": 8192,
+                "startup_timeout_seconds": 1800,
             },
         }
     )
@@ -122,6 +123,7 @@ def test_allocation_overrides_map_max_parallel_to_lmstudio_parallel() -> None:
     assert lifecycle["lms_parallel"] == 2
     assert lifecycle["lms_gpu"] == "max"
     assert lifecycle["lms_context_length"] == 8192
+    assert lifecycle["startup_timeout_seconds"] == 1800
 
 
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:

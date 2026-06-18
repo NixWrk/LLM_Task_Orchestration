@@ -36,6 +36,7 @@ def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
         ("warmup_enabled", "warmup_enabled"),
         ("warmup_prompt", "warmup_prompt"),
         ("warmup_max_tokens", "warmup_max_tokens"),
+        ("startup_timeout_seconds", "startup_timeout_seconds"),
         ("load_strategy", "load_strategy"),
         ("lms_gpu", "lms_gpu"),
         ("lms_context_length", "lms_context_length"),
