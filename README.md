@@ -378,5 +378,6 @@ Next phases:
 
 - A concrete real model profile for the server's selected local model weights.
 - Optional SGLang runtime adapter.
-- Compatibility tests for streaming, Responses API, timeouts, and backend failures.
+- Additional compatibility coverage for Responses API edge cases and provider-specific
+  backend failures.
 - Reverse proxy and TLS for controlled non-local access.
