@@ -176,3 +176,18 @@ def test_load_dynamic_model_profile_uses_lmstudio_defaults(tmp_path: Path) -> No
     assert profile.load_strategy == "cli-if-available"
     assert profile.lms_ttl_seconds == 900
     assert profile.preferred_gpus == ("gpu1",)
+
+
+def test_repository_zotero_html_translate_profile_preserves_baseline() -> None:
+    config_path = Path(__file__).resolve().parents[3] / "config" / "orchestrator.yaml"
+
+    profile = load_model_profiles(str(config_path))["zotero-html-translate"]
+
+    assert profile.backend_model == "p6_google_gemma-4-26b-a4b@q6_k"
+    assert profile.load_strategy == "cli-if-available"
+    assert profile.lms_binary == "lms"
+    assert profile.startup_timeout_seconds == 1800
+    assert profile.lms_gpu == "max"
+    assert profile.lms_context_length == 32768
+    assert profile.lms_parallel == 1
+    assert profile.lms_ttl_seconds == 3600
