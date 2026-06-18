@@ -29,7 +29,7 @@ from queue_proxy.policy import (
     load_policy_registry,
     strip_internal_fields,
 )
-from queue_proxy.request_preparation import RequestPreparationService
+from queue_proxy.request_preparation import RequestPreparationService, should_stream_response
 from queue_proxy.responses import error_response
 from queue_proxy.routing import BackendResolver
 from queue_proxy.settings import Settings
@@ -179,13 +179,22 @@ async def forward_openai_path(path: str, request: Request) -> Response:
         if backend_instance_id is not None and "model" in clean_payload:
             clean_payload["model"] = policy.backend_model
         clean_body = json.dumps(clean_payload, separators=(",", ":")).encode("utf-8")
-        response = await forwarder.stream_response(
-            path=path,
-            request=request,
-            body=clean_body,
-            upstream_base_url=upstream_base_url,
-            on_finished=release_once,
-        )
+        if should_stream_response(clean_payload):
+            response = await forwarder.stream_response(
+                path=path,
+                request=request,
+                body=clean_body,
+                upstream_base_url=upstream_base_url,
+                on_finished=release_once,
+            )
+        else:
+            response = await forwarder.forward_buffered_response(
+                path,
+                request,
+                clean_body,
+                upstream_base_url,
+            )
+            await release_once(response.status_code)
 
         if policy_metadata:
             input_tokens = int(policy_metadata.get("estimated_input_tokens", 0))

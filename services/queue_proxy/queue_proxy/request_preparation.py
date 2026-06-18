@@ -57,3 +57,7 @@ def is_llm_generation_endpoint(path: str) -> bool:
         "completions",
         "embeddings",
     }
+
+
+def should_stream_response(payload: Mapping[str, Any]) -> bool:
+    return payload.get("stream") is True

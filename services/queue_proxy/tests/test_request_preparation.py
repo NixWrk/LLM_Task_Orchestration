@@ -1,7 +1,7 @@
 import pytest
 
 from queue_proxy.policy import ModelPolicy, PolicyError, PolicyRegistry
-from queue_proxy.request_preparation import RequestPreparationService
+from queue_proxy.request_preparation import RequestPreparationService, should_stream_response
 
 
 def test_request_preparer_applies_token_policy() -> None:
@@ -38,6 +38,13 @@ def test_request_preparer_rejects_invalid_json() -> None:
             {"content-type": "application/json"},
             b"{",
         )
+
+
+def test_should_stream_response_requires_explicit_true() -> None:
+    assert should_stream_response({"stream": True}) is True
+    assert should_stream_response({"stream": False}) is False
+    assert should_stream_response({}) is False
+    assert should_stream_response({"stream": "true"}) is False
 
 
 def policy_registry() -> PolicyRegistry:

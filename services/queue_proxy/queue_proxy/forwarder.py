@@ -35,6 +35,15 @@ class UpstreamForwarder:
         body: bytes,
         upstream_base_url: str,
     ) -> Response:
+        return await self.forward_buffered_response(path, request, body, upstream_base_url)
+
+    async def forward_buffered_response(
+        self,
+        path: str,
+        request: Request,
+        body: bytes,
+        upstream_base_url: str,
+    ) -> Response:
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
                 upstream_response = await client.request(
