@@ -317,15 +317,15 @@ models:
       warmup_max_tokens: 8
       estimated_vram_gb: 16
       safety_margin_gb: 2
-      min_replicas: 1
+      min_replicas: 0
       max_replicas: 2
-      idle_ttl_seconds: 900
+      idle_ttl_seconds: 120
       preferred_gpus: [gpu0, gpu1]
 ```
 
-When `LIFECYCLE_DRY_RUN=false`, lifecycle starts the container, waits for `/v1/models`, sends a warmup chat completion, then marks the backend `ready`. Idle ready instances above `min_replicas` are marked `draining`, stopped with `docker stop`, and then marked `stopped`.
+When `LIFECYCLE_DRY_RUN=false`, lifecycle starts the container, waits for `/v1/models`, sends a warmup chat completion, then marks the backend `ready`. Idle ready instances above `min_replicas` are marked `draining`, stopped with `docker stop`, and then marked `stopped`. Use `min_replicas: 0` with `idle_ttl_seconds: 120` when the model should unload after one to two idle minutes.
 
-Lifecycle also exposes `POST /cleanup` and `:4300/metrics` for LM Studio/vLLM backend operations. Cleanup stops idle dynamic LM Studio allocations and purges old stopped/failed LM Studio records after `dynamic_models.registry_cleanup_ttl_seconds`.
+Lifecycle also exposes `POST /cleanup` and `:4300/metrics` for LM Studio/vLLM backend operations. Queue proxy schedules a delayed reconcile after durable queues become empty, so owned LM Studio loads can be unloaded after the idle TTL without manual cleanup. Cleanup stops idle dynamic LM Studio allocations and purges old stopped/failed LM Studio records after `dynamic_models.registry_cleanup_ttl_seconds`.
 
 ## Development
 

@@ -146,7 +146,7 @@ dynamic_models:
     safety_margin_gb: 1
     min_replicas: 0
     max_replicas: 1
-    idle_ttl_seconds: 900
+    idle_ttl_seconds: 120
     preferred_gpus:
       - auto
 ```
@@ -197,6 +197,19 @@ and non-critical shape improvements respect the model profile's
 `reload_min_dwell_seconds` before reload.
 
 `registry_cleanup_ttl_seconds` removes old `stopped` or `failed` LM Studio allocation records from the registry after the TTL. Idle ready instances are stopped first by `idle_ttl_seconds`; cleanup then purges stale records.
+
+For durable queues, queue proxy schedules a delayed capacity reconcile when the
+stored queue becomes empty. The default delay is `120` seconds and can be
+changed with:
+
+```text
+TASK_IDLE_RECONCILE_DELAY_SECONDS=120
+```
+
+Set model profiles to `min_replicas: 0` and `idle_ttl_seconds: 120` when owned
+LM Studio loads should be unloaded roughly one to two minutes after the queue is
+empty. Lifecycle unloads only LM Studio models it loaded itself; external/manual
+loads stay reserved and untouched.
 
 Queue proxy should route through lifecycle:
 

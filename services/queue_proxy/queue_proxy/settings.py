@@ -41,6 +41,11 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias="TASK_EXECUTOR_RETRY_MAX_SECONDS",
     )
+    task_idle_reconcile_delay_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        validation_alias="TASK_IDLE_RECONCILE_DELAY_SECONDS",
+    )
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     log_level: str = "INFO"
 

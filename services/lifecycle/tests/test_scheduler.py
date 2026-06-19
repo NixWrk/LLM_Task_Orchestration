@@ -192,4 +192,4 @@ def test_repository_zotero_html_translate_profile_preserves_baseline() -> None:
     assert profile.lms_gpu == "max"
     assert profile.lms_context_length == 32768
     assert profile.lms_parallel == 2
-    assert profile.lms_ttl_seconds == 3600
+    assert profile.lms_ttl_seconds == 120

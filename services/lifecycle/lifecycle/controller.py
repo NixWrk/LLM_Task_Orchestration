@@ -325,7 +325,7 @@ class LifecycleController:
                 continue
             matched_loads.add(load.identifier)
             updated = instance_with_lmstudio_load(profile, instance, load)
-            synced.append(self.registry.upsert(updated).to_dict())
+            synced.append(self.registry.upsert(updated, touch=False).to_dict())
 
         for load in profile_loads:
             if load.identifier in matched_loads:

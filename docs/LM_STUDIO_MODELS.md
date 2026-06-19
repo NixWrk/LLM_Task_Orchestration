@@ -86,9 +86,9 @@ models:
       base_url: http://host.docker.internal:1234/v1
       estimated_vram_gb: 8
       safety_margin_gb: 1
-      min_replicas: 1
+      min_replicas: 0
       max_replicas: 1
-      idle_ttl_seconds: 3600
+      idle_ttl_seconds: 120
       preferred_gpus:
         - auto
 ```
@@ -106,10 +106,15 @@ lifecycle:
   lms_gpu: max
   lms_context_length: 8192
   lms_parallel: 1
-  lms_ttl_seconds: 900
+  lms_ttl_seconds: 120
 ```
 
 Lifecycle then runs `lms load <backend_model> --identifier <backend_model> --yes` before healthcheck/warmup and `lms unload <backend_model>` during idle stop, but only for models it actually loaded. If the identifier already exists, lifecycle treats it as pre-existing and leaves unloading to LM Studio/user TTL.
+
+For batch queues, use `min_replicas: 0`, `idle_ttl_seconds: 120`, and
+`lms_ttl_seconds: 120` when the model should leave memory after one to two idle
+minutes. Queue proxy schedules a delayed reconcile after the durable queue
+becomes empty so lifecycle gets a chance to unload the owned LM Studio model.
 
 On each reconcile, lifecycle can also inspect `lms ps --json`. Live shape fields
 such as context, parallel, GPU, and TTL are written back to registry metadata.
@@ -133,7 +138,7 @@ lms load p6_google_gemma-4-26b-a4b@q6_k `
   --gpu max `
   --context-length 32768 `
   --parallel 1 `
-  --ttl 3600 `
+  --ttl 120 `
   --identifier p6_google_gemma-4-26b-a4b@q6_k `
   --yes
 ```

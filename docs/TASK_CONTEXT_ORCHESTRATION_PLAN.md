@@ -46,6 +46,9 @@ Implemented:
 9. Synchronous `/v1/...` requests that declare `schema_version: llmo.task.v1`
    are rejected when required identity fields, priority, or resource hints are
    malformed.
+10. Queue proxy schedules a delayed reconcile after durable queues become empty,
+    so lifecycle can unload owned idle LM Studio loads after the configured idle
+    TTL.
 
 Important gap:
 
@@ -303,6 +306,8 @@ Status:
 7. Done: operator-facing plan explanations are exposed through lifecycle and
    `llmoctl explain-plan`.
 8. Done: lifecycle exports reload and live LM Studio reconciliation counters.
+9. Done: queue proxy re-reconciles capacity after task completion/failure/cancel
+   and schedules a delayed empty-queue reconcile for idle unload.
 
 ### Tasks
 

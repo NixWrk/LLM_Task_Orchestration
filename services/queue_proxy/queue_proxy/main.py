@@ -72,6 +72,7 @@ task_store = build_task_store(
 )
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 task_executor_task: asyncio.Task[None] | None = None
+idle_reconcile_task: asyncio.Task[None] | None = None
 
 
 @app.on_event("startup")
@@ -84,10 +85,16 @@ async def start_task_executor() -> None:
 @app.on_event("shutdown")
 async def stop_task_executor() -> None:
     if task_executor_task is None:
-        return
-    task_executor_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task_executor_task
+        task_tasks = []
+    else:
+        task_executor_task.cancel()
+        task_tasks = [task_executor_task]
+    if idle_reconcile_task is not None:
+        idle_reconcile_task.cancel()
+        task_tasks.append(idle_reconcile_task)
+    for task in task_tasks:
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 @app.get("/health")
@@ -155,6 +162,7 @@ async def submit_task_queue(request: Request) -> JSONResponse:
     queue_lengths = task_store.queue_lengths_by_model()
     context_plans = task_store.context_plans_by_model()
     capacity = await reconcile_capacity(queue_lengths, context_plans)
+    schedule_idle_reconcile_if_empty(queue_lengths)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -280,6 +288,7 @@ async def cancel_task(task_id: str, request: Request) -> JSONResponse:
         )
     if task.state == "cancelled":
         record_task_event(task, "cancelled")
+        await reconcile_current_task_capacity()
     return JSONResponse(task.to_detail())
 
 
@@ -488,6 +497,37 @@ async def reconcile_capacity(
     }
 
 
+async def reconcile_current_task_capacity() -> dict[str, Any]:
+    queue_lengths = task_store.queue_lengths_by_model()
+    context_plans = task_store.context_plans_by_model()
+    result = await reconcile_capacity(queue_lengths, context_plans)
+    schedule_idle_reconcile_if_empty(queue_lengths)
+    return result
+
+
+def schedule_idle_reconcile_if_empty(queue_lengths: dict[str, int]) -> None:
+    global idle_reconcile_task
+    if queue_lengths:
+        if idle_reconcile_task is not None and not idle_reconcile_task.done():
+            idle_reconcile_task.cancel()
+        idle_reconcile_task = None
+        return
+    if backend_registry_client is None:
+        return
+    if idle_reconcile_task is not None and not idle_reconcile_task.done():
+        idle_reconcile_task.cancel()
+    idle_reconcile_task = asyncio.create_task(delayed_idle_reconcile())
+
+
+async def delayed_idle_reconcile() -> None:
+    await asyncio.sleep(settings.task_idle_reconcile_delay_seconds)
+    queue_lengths = task_store.queue_lengths_by_model()
+    if queue_lengths:
+        return
+    context_plans = task_store.context_plans_by_model()
+    await reconcile_capacity(queue_lengths, context_plans)
+
+
 async def explain_capacity(
     queue_lengths: dict[str, int],
     context_plans: dict[str, dict[str, Any]],
@@ -525,7 +565,7 @@ async def task_executor_loop() -> None:
             await execute_stored_task(task)
         except Exception as exc:
             logger.exception("task_execution_failed task_id=%s", task.task_id)
-            record_task_failure(
+            await record_task_failure_and_reconcile(
                 task,
                 {
                     "type": type(exc).__name__,
@@ -537,7 +577,7 @@ async def task_executor_loop() -> None:
 
 async def execute_stored_task(task: StoredTask) -> None:
     if not task.payload:
-        record_task_failure(
+        await record_task_failure_and_reconcile(
             task,
             {
                 "type": "missing_task_payload",
@@ -549,13 +589,13 @@ async def execute_stored_task(task: StoredTask) -> None:
 
     payload_error = validate_executable_task_payload(task)
     if payload_error is not None:
-        record_task_failure(task, payload_error, retryable=False)
+        await record_task_failure_and_reconcile(task, payload_error, retryable=False)
         return
 
     try:
         policy = policy_registry.resolve(task.model)
     except PolicyError as exc:
-        record_task_failure(
+        await record_task_failure_and_reconcile(
             task,
             {
                 "type": exc.error_type,
@@ -570,7 +610,7 @@ async def execute_stored_task(task: StoredTask) -> None:
         task.orchestration,
     )
     if upstream_base_url is None:
-        record_task_failure(
+        await record_task_failure_and_reconcile(
             task,
             {
                 "type": "no_ready_backend",
@@ -593,7 +633,7 @@ async def execute_stored_task(task: StoredTask) -> None:
                 headers=task_executor_headers(),
             )
     except httpx.HTTPError as exc:
-        record_task_failure(
+        await record_task_failure_and_reconcile(
             task,
             {
                 "type": "upstream_request_failed",
@@ -609,7 +649,7 @@ async def execute_stored_task(task: StoredTask) -> None:
 
     body = response_body(response)
     if response.status_code >= 400:
-        record_task_failure(
+        await record_task_failure_and_reconcile(
             task,
             {
                 "type": "upstream_status",
@@ -636,6 +676,18 @@ async def execute_stored_task(task: StoredTask) -> None:
         "succeeded",
         seconds_between(completed.started_at, completed.finished_at),
     )
+    await reconcile_current_task_capacity()
+
+
+async def record_task_failure_and_reconcile(
+    task: StoredTask,
+    error: dict[str, Any],
+    *,
+    retryable: bool,
+) -> StoredTask:
+    stored = record_task_failure(task, error, retryable=retryable)
+    await reconcile_current_task_capacity()
+    return stored
 
 
 def record_task_failure(

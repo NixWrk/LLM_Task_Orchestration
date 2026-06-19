@@ -41,6 +41,12 @@ def test_backend_resolver_lookup_failure_can_fallback_to_static_upstream() -> No
     assert instance_id is None
 
 
+def test_settings_defaults_to_two_minute_idle_reconcile_delay() -> None:
+    settings = Settings(UPSTREAM_LITELLM_BASE_URL="http://static:4000")
+
+    assert settings.task_idle_reconcile_delay_seconds == 120
+
+
 class DeniedAllocationClient:
     async def choose_backend(self, _model):
         return None

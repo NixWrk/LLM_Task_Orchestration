@@ -78,8 +78,9 @@ class BackendRegistry:
             offset += 1
         return host_port_start + offset
 
-    def upsert(self, instance: BackendInstance) -> BackendInstance:
-        instance.updated_at = now_iso()
+    def upsert(self, instance: BackendInstance, *, touch: bool = True) -> BackendInstance:
+        if touch:
+            instance.updated_at = now_iso()
         self._instances[instance.instance_id] = instance
         self.save()
         return instance

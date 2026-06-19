@@ -33,6 +33,26 @@ def test_adjust_active_requests_tracks_leases(tmp_path: Path) -> None:
     assert extra_release.active_requests == 0
 
 
+def test_upsert_can_preserve_idle_timestamp(tmp_path: Path) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    instance = BackendInstance(
+        instance_id="backend-1",
+        model="local-main",
+        backend_model="local-main",
+        runtime="lmstudio",
+        base_url="http://backend:8000/v1",
+        gpu_ids=["gpu0"],
+        state="ready",
+        reserved_vram_mb=1024,
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+
+    stored = registry.upsert(instance, touch=False)
+
+    assert stored.updated_at == "2026-01-01T00:00:00+00:00"
+    assert registry.get("backend-1").updated_at == "2026-01-01T00:00:00+00:00"
+
+
 def test_registry_store_saves_json_atomically(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "registry.json"
     store = JsonFileRegistryStore(path)

@@ -80,7 +80,7 @@ The request shape is:
     "lms_gpu": "max",
     "lms_context_length": 32768,
     "max_parallel": 1,
-    "idle_ttl_seconds": 900
+    "idle_ttl_seconds": 120
   }
 }
 ```
@@ -144,7 +144,7 @@ Example HTML translation queue:
     "lms_gpu": "max",
     "lms_context_length": 32768,
     "max_parallel": 1,
-    "idle_ttl_seconds": 900
+    "idle_ttl_seconds": 120
   },
   "tasks": [
     {
@@ -306,7 +306,7 @@ X-Request-ID: 018fe4d5-8f2c-7c4e-8b6f-c4ad0c2e6e39
     "max_queued_requests": 64,
     "queue_timeout_seconds": 900,
     "startup_timeout_seconds": 1800,
-    "idle_ttl_seconds": 900,
+    "idle_ttl_seconds": 120,
     "ttl_seconds": 7200,
     "estimated_vram_gb": 20,
     "safety_margin_gb": 1,
@@ -314,7 +314,7 @@ X-Request-ID: 018fe4d5-8f2c-7c4e-8b6f-c4ad0c2e6e39
     "lms_gpu": "max",
     "lms_context_length": 32768,
     "lms_parallel": 1,
-    "lms_ttl_seconds": 3600,
+    "lms_ttl_seconds": 120,
     "tokens": {
       "max_input_tokens": 32768,
       "max_output_tokens": 8192,
@@ -632,6 +632,9 @@ For synchronous inference:
 10. Queue proxy releases the backend lease and limiter slot on completion,
     upstream error, or client disconnect.
 11. Lifecycle cleanup stops idle dynamic backends after TTL policy allows it.
+    For durable queues, queue proxy schedules a delayed reconcile after the
+    stored queue becomes empty so owned LM Studio loads can be unloaded without
+    manual cleanup.
 
 ## Response Contract
 
@@ -941,6 +944,9 @@ Implemented now:
     `invalid_task_protocol`.
 29. Lifecycle metrics include reload outcomes and live LM Studio reconciliation
     events.
+30. Queue proxy re-reconciles capacity after durable task completion, failure,
+    retry, or cancellation, and schedules an empty-queue delayed reconcile so
+    owned idle LM Studio loads can unload after `idle_ttl_seconds`.
 
 Needed next:
 

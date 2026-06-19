@@ -673,6 +673,7 @@ def test_reconcile_persists_live_lmstudio_shape_in_registry(
     monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
     monkeypatch.setattr("lifecycle.controller.loaded_models", lambda _binary: [load])
     monkeypatch.setattr("lifecycle.controller.inspect_loaded_model", lambda *_args: load)
+    updated_before = registry.get("lmstudio-1").updated_at
 
     result = asyncio.run(controller.reconcile({"local-main": 0}, {}))
 
@@ -682,6 +683,7 @@ def test_reconcile_persists_live_lmstudio_shape_in_registry(
     assert stored.metadata["lms_context_length"] == 32768
     assert stored.metadata["lms_parallel"] == 2
     assert stored.metadata["lmstudio_ownership"] == "external"
+    assert stored.updated_at == updated_before
 
 
 def test_reconcile_records_external_lmstudio_load_as_reserved_capacity(

@@ -422,8 +422,8 @@ The request names the desired model/profile and passes task hints in
     "priority": "batch",
     "lms_context_length": 32768,
     "estimated_vram_gb": 20,
-    "idle_ttl_seconds": 900,
-    "lms_ttl_seconds": 3600
+    "idle_ttl_seconds": 120,
+    "lms_ttl_seconds": 120
   }
 }
 ```
