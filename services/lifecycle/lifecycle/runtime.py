@@ -55,6 +55,10 @@ class RuntimeLifecycleService:
                 "idle_ttl_seconds": profile.idle_ttl_seconds,
                 "estimated_vram_mb": profile.estimated_vram_mb,
                 "safety_margin_mb": profile.safety_margin_mb,
+                "lms_context_length": profile.lms_context_length,
+                "lms_parallel": profile.lms_parallel,
+                "lms_gpu": profile.lms_gpu,
+                "lms_ttl_seconds": profile.lms_ttl_seconds,
             }
         )
         return instance

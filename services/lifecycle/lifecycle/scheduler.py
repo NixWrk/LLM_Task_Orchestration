@@ -33,6 +33,8 @@ def choose_gpu(
             reason="no_gpu_with_enough_vram",
             required_vram_mb=required_vram_mb,
             available_vram_mb=best_available,
+            lms_context_length=profile.lms_context_length,
+            lms_parallel=profile.lms_parallel,
         )
 
     selected_gpu, available = max(candidates, key=lambda item: item[1])
@@ -43,6 +45,8 @@ def choose_gpu(
         reason="vram_available",
         required_vram_mb=required_vram_mb,
         available_vram_mb=available,
+        lms_context_length=profile.lms_context_length,
+        lms_parallel=profile.lms_parallel,
     )
 
 

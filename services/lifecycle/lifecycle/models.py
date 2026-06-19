@@ -14,7 +14,60 @@ BackendState = Literal[
     "failed",
 ]
 
-ScaleActionType = Literal["start", "stop", "noop"]
+ScaleActionType = Literal["start", "stop", "reload", "reject_oversized", "noop"]
+
+
+@dataclass(frozen=True)
+class ContextPlan:
+    queued_tasks: int = 0
+    max_required_context_tokens: int = 0
+    recommended_lms_context_length: int | None = None
+    requested_parallel: int = 1
+    recommended_lms_parallel: int | None = None
+    total_slot_context_tokens: int = 0
+    context_cap_tokens: int | None = None
+    oversized_tasks: tuple[str, ...] = ()
+    reload_required: bool = False
+    task_contexts: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> ContextPlan:
+        raw_oversized_tasks = payload.get("oversized_tasks", [])
+        if not isinstance(raw_oversized_tasks, list):
+            raw_oversized_tasks = []
+        raw_task_contexts = payload.get("task_contexts", [])
+        if not isinstance(raw_task_contexts, list):
+            raw_task_contexts = []
+
+        return cls(
+            queued_tasks=optional_int(payload.get("queued_tasks")) or 0,
+            max_required_context_tokens=optional_int(
+                payload.get("max_required_context_tokens")
+            )
+            or 0,
+            recommended_lms_context_length=optional_int(
+                payload.get("recommended_lms_context_length")
+            ),
+            requested_parallel=optional_int(payload.get("requested_parallel")) or 1,
+            recommended_lms_parallel=optional_int(
+                payload.get("recommended_lms_parallel")
+            ),
+            total_slot_context_tokens=optional_int(
+                payload.get("total_slot_context_tokens")
+            )
+            or 0,
+            context_cap_tokens=optional_int(payload.get("context_cap_tokens")),
+            oversized_tasks=tuple(str(item) for item in raw_oversized_tasks),
+            reload_required=bool(payload.get("reload_required", False)),
+            task_contexts=tuple(
+                dict(item)
+                for item in raw_task_contexts
+                if isinstance(item, dict)
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -118,6 +171,12 @@ class PlacementDecision:
     reason: str
     required_vram_mb: int
     available_vram_mb: int | None = None
+    instance_id: str | None = None
+    lms_context_length: int | None = None
+    lms_parallel: int | None = None
+    current_lms_context_length: int | None = None
+    current_lms_parallel: int | None = None
+    context_plan: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

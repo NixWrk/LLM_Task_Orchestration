@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from lifecycle.allocation import queue_lengths_from_payload
+from lifecycle.allocation import profile_with_context_plan
 from lifecycle.allocation_service import AllocationService
 from lifecycle.cleanup import CleanupService, idle_seconds
 from lifecycle.config import (
@@ -15,9 +15,11 @@ from lifecycle.config import (
 from lifecycle.dynamic_policy import dynamic_model_allowed
 from lifecycle.models import (
     BackendInstance,
+    ContextPlan,
     GpuState,
     ModelProfile,
     PlacementDecision,
+    optional_int,
 )
 from lifecycle.registry import BackendRegistry
 from lifecycle.runtime import RuntimeLifecycleService
@@ -111,36 +113,65 @@ class LifecycleController:
             for item in payload.get("gpus", [])
         ]
 
-    async def plan(self, queue_lengths: dict[str, int] | None = None) -> dict[str, Any]:
+    async def plan(
+        self,
+        queue_lengths: dict[str, int] | None = None,
+        context_plans: dict[str, ContextPlan] | None = None,
+    ) -> dict[str, Any]:
         queue_lengths = queue_lengths or {}
+        context_plans = context_plans or {}
         profiles = self.profiles()
         gpus = await self.gpu_states()
         plans: list[dict[str, Any]] = []
 
         for profile in profiles.values():
+            context_plan = context_plans.get(profile.public_name)
+            effective_profile = profile_with_context_plan(profile, context_plan)
             ready_count = len(self.registry.ready_for_model(profile.public_name))
             active_count = len(self.registry.active_for_model(profile.public_name))
-            desired_count = desired_replicas(
-                profile,
-                ready_count,
+            queue_length = max(
                 queue_lengths.get(profile.public_name, 0),
+                context_plan.queued_tasks if context_plan is not None else 0,
+            )
+            desired_count = desired_replicas(
+                effective_profile,
+                ready_count,
+                queue_length,
             )
             # Scale one replica per reconcile cycle so placement can account for each
             # newly reserved backend before making the next decision.
             missing = 1 if desired_count > active_count else 0
 
             decisions: list[PlacementDecision] = []
-            for _ in range(missing):
-                decisions.append(choose_gpu(profile, gpus, self.registry))
+            if context_plan is not None and context_plan.oversized_tasks:
+                decisions.append(reject_oversized_decision(effective_profile, context_plan))
+            else:
+                for _ in range(missing):
+                    decisions.append(choose_gpu(effective_profile, gpus, self.registry))
+
+                if not decisions and queue_length > 0:
+                    reload_decision = reload_decision_for_context_plan(
+                        effective_profile,
+                        self.registry.ready_for_model(profile.public_name),
+                        context_plan,
+                    )
+                    if reload_decision is not None:
+                        decisions.append(reload_decision)
 
             if not decisions and desired_count == active_count:
                 decisions.append(
                     PlacementDecision(
-                        model=profile.public_name,
+                        model=effective_profile.public_name,
                         action="noop",
                         gpu_id=None,
                         reason="desired_replicas_satisfied",
-                        required_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
+                        required_vram_mb=(
+                            effective_profile.estimated_vram_mb
+                            + effective_profile.safety_margin_mb
+                        ),
+                        lms_context_length=effective_profile.lms_context_length,
+                        lms_parallel=effective_profile.lms_parallel,
+                        context_plan=context_plan.to_dict() if context_plan else None,
                     )
                 )
 
@@ -150,6 +181,8 @@ class LifecycleController:
                     "ready_replicas": ready_count,
                     "active_replicas": active_count,
                     "desired_replicas": desired_count,
+                    "desired_backend_shape": desired_backend_shape(effective_profile),
+                    "context_plan": context_plan.to_dict() if context_plan else None,
                     "decisions": [decision.to_dict() for decision in decisions],
                 }
             )
@@ -160,15 +193,23 @@ class LifecycleController:
             "models": plans,
         }
 
-    async def reconcile(self, queue_lengths: dict[str, int] | None = None) -> dict[str, Any]:
+    async def reconcile(
+        self,
+        queue_lengths: dict[str, int] | None = None,
+        context_plans: dict[str, ContextPlan] | None = None,
+    ) -> dict[str, Any]:
         queue_lengths = queue_lengths or {}
+        context_plans = context_plans or {}
         profiles = self.profiles()
         stopped = await self.stop_idle_instances(profiles, queue_lengths)
-        plan = await self.plan(queue_lengths)
+        plan = await self.plan(queue_lengths, context_plans)
         created: list[dict[str, Any]] = []
 
         for model_plan in plan["models"]:
-            profile = profiles[model_plan["model"]]
+            profile = profile_with_context_plan(
+                profiles[model_plan["model"]],
+                context_plans.get(model_plan["model"]),
+            )
             gpus = {gpu.id: gpu for gpu in await self.gpu_states()}
             for decision_payload in model_plan["decisions"]:
                 if decision_payload["action"] != "start" or not decision_payload["gpu_id"]:
@@ -252,3 +293,86 @@ class LifecycleController:
         instance: BackendInstance,
     ) -> dict[str, Any]:
         return await self.runtime.stop_instance(profile, instance)
+
+
+def desired_backend_shape(profile: ModelProfile) -> dict[str, Any]:
+    return {
+        "runtime": profile.runtime,
+        "lms_context_length": profile.lms_context_length,
+        "lms_parallel": profile.lms_parallel,
+        "lms_gpu": profile.lms_gpu,
+        "required_vram_mb": profile.estimated_vram_mb + profile.safety_margin_mb,
+        "estimated_vram_mb": profile.estimated_vram_mb,
+        "safety_margin_mb": profile.safety_margin_mb,
+    }
+
+
+def reject_oversized_decision(
+    profile: ModelProfile,
+    context_plan: ContextPlan,
+) -> PlacementDecision:
+    return PlacementDecision(
+        model=profile.public_name,
+        action="reject_oversized",
+        gpu_id=None,
+        reason="context_plan_has_oversized_tasks",
+        required_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
+        lms_context_length=profile.lms_context_length,
+        lms_parallel=profile.lms_parallel,
+        context_plan=context_plan.to_dict(),
+    )
+
+
+def reload_decision_for_context_plan(
+    profile: ModelProfile,
+    ready_instances: list[BackendInstance],
+    context_plan: ContextPlan | None,
+) -> PlacementDecision | None:
+    if context_plan is None or profile.runtime != "lmstudio":
+        return None
+
+    for instance in ready_instances:
+        if backend_satisfies_profile_shape(instance, profile):
+            continue
+        current_context = lms_context_length_from_instance(instance)
+        current_parallel = lms_parallel_from_instance(instance)
+        return PlacementDecision(
+            model=profile.public_name,
+            action="reload",
+            gpu_id=instance.gpu_ids[0] if instance.gpu_ids else None,
+            reason="backend_shape_mismatch",
+            required_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
+            instance_id=instance.instance_id,
+            lms_context_length=profile.lms_context_length,
+            lms_parallel=profile.lms_parallel,
+            current_lms_context_length=current_context,
+            current_lms_parallel=current_parallel,
+            context_plan=context_plan.to_dict(),
+        )
+
+    return None
+
+
+def backend_satisfies_profile_shape(
+    instance: BackendInstance,
+    profile: ModelProfile,
+) -> bool:
+    desired_context = profile.lms_context_length
+    desired_parallel = profile.lms_parallel
+    if desired_context:
+        current_context = lms_context_length_from_instance(instance)
+        if current_context is None or current_context < desired_context:
+            return False
+    if desired_parallel:
+        current_parallel = lms_parallel_from_instance(instance)
+        if current_parallel is None or current_parallel < desired_parallel:
+            return False
+    return True
+
+
+def lms_context_length_from_instance(instance: BackendInstance) -> int | None:
+    return optional_int(instance.metadata.get("lms_context_length"))
+
+
+def lms_parallel_from_instance(instance: BackendInstance) -> int | None:
+    return optional_int(instance.metadata.get("lms_parallel"))

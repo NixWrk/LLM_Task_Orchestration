@@ -151,6 +151,17 @@ Make context planning explicit and stable enough for lifecycle to consume.
 Teach lifecycle to choose backend shape from queue contents, not only queue
 length.
 
+Status:
+
+1. Done: `/plan` and `/reconcile` parse `context_plans`.
+2. Done: lifecycle derives desired `lms_context_length` and `lms_parallel` from
+   queue contents.
+3. Done: start decisions include the planned LM Studio shape.
+4. Done: ready LM Studio backends with too-small context/parallel return a
+   `reload` decision instead of silently reusing the load.
+5. Next: execute reload through a graceful drain/unload/load/warmup state
+   machine.
+
 ### Tasks
 
 1. Extend `/reconcile` input to accept `context_plans`.

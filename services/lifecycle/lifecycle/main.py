@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 from orchestrator_core.logging import configure_json_logging
 from orchestrator_core.prometheus import prom_labels
 
-from lifecycle.controller import LifecycleController, queue_lengths_from_payload
+from lifecycle.allocation import context_plans_from_payload, queue_lengths_from_payload
+from lifecycle.controller import LifecycleController
 from lifecycle.registry import BackendRegistry
 from lifecycle.settings import Settings
 
@@ -95,14 +96,20 @@ async def release_backend(instance_id: str) -> JSONResponse:
 @app.post("/plan")
 async def plan(request: Request) -> JSONResponse:
     payload = await request.json()
-    result = await controller.plan(queue_lengths_from_payload(payload))
+    result = await controller.plan(
+        queue_lengths_from_payload(payload),
+        context_plans_from_payload(payload),
+    )
     return JSONResponse(result)
 
 
 @app.post("/reconcile")
 async def reconcile(request: Request) -> JSONResponse:
     payload = await request.json()
-    result = await controller.reconcile(queue_lengths_from_payload(payload))
+    result = await controller.reconcile(
+        queue_lengths_from_payload(payload),
+        context_plans_from_payload(payload),
+    )
     return JSONResponse(result)
 
 

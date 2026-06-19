@@ -768,13 +768,16 @@ Implemented now:
 5. `TaskStore` abstraction with in-memory and JSON-file implementations for
    queue/capacity checks.
 6. Queue submission triggers lifecycle reconcile from per-model queue lengths.
-7. Dynamic model policy from `dynamic_models`.
-8. Lifecycle `POST /allocations` for dynamic LM Studio/OpenAI-compatible
+7. Lifecycle `/plan` and `/reconcile` consume `context_plans` and report
+   desired backend shape plus `reload` decisions when an LM Studio load is too
+   small for the queue.
+8. Dynamic model policy from `dynamic_models`.
+9. Lifecycle `POST /allocations` for dynamic LM Studio/OpenAI-compatible
    backend allocation.
-9. Backend registry lookup, lease, and release.
-10. LM Studio hints such as `lms_gpu`, `lms_context_length`, `lms_parallel`, and
+10. Backend registry lookup, lease, and release.
+11. LM Studio hints such as `lms_gpu`, `lms_context_length`, `lms_parallel`, and
    `lms_ttl_seconds`.
-11. Idle cleanup for dynamic LM Studio allocations.
+12. Idle cleanup for dynamic LM Studio allocations.
 
 Needed next:
 
@@ -782,6 +785,7 @@ Needed next:
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
 4. Tenant-scoped list/status APIs and production Postgres task store.
-5. Allocation ids and task ownership in lifecycle.
-6. External GPU reservation API for non-LLM consumers such as OCR.
-7. Python client helpers that build the canonical envelope.
+5. Graceful LM Studio reload execution for planned backend-shape changes.
+6. Allocation ids and task ownership in lifecycle.
+7. External GPU reservation API for non-LLM consumers such as OCR.
+8. Python client helpers that build the canonical envelope.

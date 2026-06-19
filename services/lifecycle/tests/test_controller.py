@@ -2,14 +2,18 @@ from datetime import UTC, datetime, timedelta
 import asyncio
 from pathlib import Path
 
-from lifecycle.allocation import allocation_overrides, enrich_profile_from_lmstudio_metadata
+from lifecycle.allocation import (
+    allocation_overrides,
+    context_plans_from_payload,
+    enrich_profile_from_lmstudio_metadata,
+)
 from lifecycle.controller import (
     LifecycleController,
     idle_seconds,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
 from lifecycle.lmstudio import estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata
-from lifecycle.models import BackendInstance, GpuState, ModelProfile
+from lifecycle.models import BackendInstance, ContextPlan, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
 from lifecycle.runtime import RuntimeLifecycleService, should_verify_before_start
 from orchestrator_core.openai import openai_url
@@ -124,6 +128,122 @@ def test_allocation_overrides_map_max_parallel_to_lmstudio_parallel() -> None:
     assert lifecycle["lms_gpu"] == "max"
     assert lifecycle["lms_context_length"] == 8192
     assert lifecycle["startup_timeout_seconds"] == 1800
+
+
+def test_plan_starts_lmstudio_with_context_plan_shape(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    controller = lifecycle_controller_for_plan(tmp_path)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    model_plan = result["models"][0]
+    decision = model_plan["decisions"][0]
+    assert model_plan["desired_backend_shape"]["lms_context_length"] == 16384
+    assert model_plan["desired_backend_shape"]["lms_parallel"] == 2
+    assert decision["action"] == "start"
+    assert decision["gpu_id"] == "gpu0"
+    assert decision["lms_context_length"] == 16384
+    assert decision["lms_parallel"] == 2
+
+
+def test_plan_returns_reload_when_lmstudio_shape_is_too_small(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 8192, "lms_parallel": 1},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "reload"
+    assert decision["instance_id"] == "lmstudio-1"
+    assert decision["reason"] == "backend_shape_mismatch"
+    assert decision["current_lms_context_length"] == 8192
+    assert decision["current_lms_parallel"] == 1
+    assert decision["lms_context_length"] == 16384
+    assert decision["lms_parallel"] == 2
+
+
+def test_plan_reuses_lmstudio_shape_when_it_already_satisfies_context_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 32768, "lms_parallel": 2},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "noop"
+    assert decision["reason"] == "desired_replicas_satisfied"
 
 
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:
@@ -277,6 +397,68 @@ def lmstudio_profile(load_strategy: str = "cli-if-available") -> ModelProfile:
         max_replicas=1,
         idle_ttl_seconds=900,
         load_strategy=load_strategy,
+    )
+
+
+def lifecycle_controller_for_plan(
+    tmp_path: Path,
+    registry: BackendRegistry | None = None,
+) -> LifecycleController:
+    config_path = tmp_path / "orchestrator.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "models:",
+                "  local-main:",
+                "    public_name: local-main",
+                "    backend_model: local-main",
+                "    lifecycle:",
+                "      runtime: lmstudio",
+                "      base_url: http://host.docker.internal:1234/v1",
+                "      load_strategy: cli-if-available",
+                "      estimated_vram_gb: 8",
+                "      safety_margin_gb: 1",
+                "      min_replicas: 0",
+                "      max_replicas: 1",
+                "      lms_context_length: 8192",
+                "      lms_parallel: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return LifecycleController(
+        config_path=str(config_path),
+        registry=registry or BackendRegistry(str(tmp_path / "registry.json")),
+        gpu_inventory_url="http://gpu-inventory:4200",
+        request_timeout_seconds=1,
+        dry_run=True,
+    )
+
+
+def context_plan_payload(
+    *,
+    recommended_context: int,
+    recommended_parallel: int,
+) -> dict[str, ContextPlan]:
+    return context_plans_from_payload(
+        {
+            "context_plans": {
+                "local-main": {
+                    "queued_tasks": 2,
+                    "max_required_context_tokens": 11000,
+                    "recommended_lms_context_length": recommended_context,
+                    "requested_parallel": 4,
+                    "recommended_lms_parallel": recommended_parallel,
+                    "total_slot_context_tokens": (
+                        recommended_context * recommended_parallel
+                    ),
+                    "context_cap_tokens": 32768,
+                    "oversized_tasks": [],
+                    "reload_required": False,
+                    "task_contexts": [],
+                }
+            }
+        }
     )
 
 

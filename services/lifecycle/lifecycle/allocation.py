@@ -8,7 +8,7 @@ from lifecycle.lmstudio import (
     estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata,
     metadata_for_model as lmstudio_metadata_for_model,
 )
-from lifecycle.models import ModelProfile
+from lifecycle.models import ContextPlan, ModelProfile
 
 
 def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
@@ -16,6 +16,34 @@ def queue_lengths_from_payload(payload: dict[str, Any]) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     return {str(model): int(length) for model, length in raw.items()}
+
+
+def context_plans_from_payload(payload: dict[str, Any]) -> dict[str, ContextPlan]:
+    raw = payload.get("context_plans", {})
+    if not isinstance(raw, dict):
+        return {}
+    plans: dict[str, ContextPlan] = {}
+    for model, raw_plan in raw.items():
+        if isinstance(raw_plan, dict):
+            plans[str(model)] = ContextPlan.from_dict(raw_plan)
+    return plans
+
+
+def profile_with_context_plan(
+    profile: ModelProfile,
+    context_plan: ContextPlan | None,
+) -> ModelProfile:
+    if context_plan is None or context_plan.queued_tasks <= 0:
+        return profile
+
+    overrides: dict[str, Any] = {}
+    if context_plan.recommended_lms_context_length:
+        overrides["lms_context_length"] = context_plan.recommended_lms_context_length
+    if context_plan.recommended_lms_parallel:
+        overrides["lms_parallel"] = context_plan.recommended_lms_parallel
+    if not overrides:
+        return profile
+    return replace(profile, **overrides)
 
 
 def allocation_overrides(payload: dict[str, Any]) -> dict[str, Any]:
