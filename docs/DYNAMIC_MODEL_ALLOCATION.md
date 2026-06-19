@@ -2,6 +2,10 @@
 
 Applications do not need to know which GPU or backend process is ready. They send an OpenAI-compatible request to queue proxy and name the model they want.
 
+For the canonical cross-project envelope and field semantics, see
+[Unified Task Protocol](UNIFIED_TASK_PROTOCOL.md). This document focuses on the
+dynamic allocation path that currently implements part of that protocol.
+
 ## Chat Request
 
 ```http
@@ -18,6 +22,14 @@ Authorization: Bearer <QUEUE_PROXY_API_KEY if configured>
   ],
   "max_tokens": 64,
   "orchestration": {
+    "schema_version": "llmo.task.v1",
+    "tenant": "elvis",
+    "project": "example",
+    "service": "example-worker",
+    "task": "chat_completion",
+    "job_id": "example:chat:001",
+    "idempotency_key": "example:chat:001:v1",
+    "priority": "foreground",
     "gpu": "auto",
     "max_parallel": 1,
     "max_queued_requests": 8,
@@ -67,6 +79,13 @@ Content-Type: application/json
 {
   "model": "qwen3_5_9b_q6k",
   "orchestration": {
+    "schema_version": "llmo.task.v1",
+    "tenant": "elvis",
+    "project": "example",
+    "service": "example-controller",
+    "task": "model_warmup",
+    "job_id": "warmup:qwen3_5_9b_q6k",
+    "priority": "batch",
     "runtime": "lmstudio",
     "base_url": "http://host.docker.internal:1234/v1",
     "gpu": "gpu0",

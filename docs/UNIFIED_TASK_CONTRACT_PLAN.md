@@ -2,6 +2,9 @@
 
 Last updated: 2026-06-19
 
+This document is the implementation plan that led to the protocol. The canonical
+client-facing contract is [Unified Task Protocol](UNIFIED_TASK_PROTOCOL.md).
+
 ## Purpose
 
 This orchestrator is the single entry point for local LLM work from all Elvis
@@ -22,6 +25,7 @@ POST http://localhost:4100/v1/chat/completions
 Authorization: Bearer <service-key>
 Content-Type: application/json
 X-Project-ID: zotero
+X-Tenant-ID: elvis
 X-Service-ID: zotero-html-translate-worker
 X-Task-ID: zotero:item:ABCD1234:translate:ru
 X-Request-ID: <uuid-or-deterministic-id>
@@ -40,7 +44,8 @@ X-Priority: batch
   "max_tokens": 8192,
   "stream": false,
   "orchestration": {
-    "schema_version": "2026-06-19",
+    "schema_version": "llmo.task.v1",
+    "tenant": "elvis",
     "project": "zotero",
     "service": "zotero-html-translate-worker",
     "task": "html_translate",
@@ -75,11 +80,12 @@ X-Priority: batch
 1. `model`: public model/profile name requested by the caller.
 2. `messages` or other OpenAI-compatible input for the endpoint.
 3. `orchestration.schema_version`.
-4. `orchestration.project`.
-5. `orchestration.service`.
-6. `orchestration.task`.
-7. `orchestration.job_id`.
-8. `orchestration.priority`.
+4. `orchestration.tenant`.
+5. `orchestration.project`.
+6. `orchestration.service`.
+7. `orchestration.task`.
+8. `orchestration.job_id`.
+9. `orchestration.priority`.
 
 ### Optional Resource Hints
 

@@ -55,7 +55,7 @@ For a repeatable local preparation run that installs Python dependencies, pulls 
 
 If you already have models downloaded in LM Studio, use [LM Studio Models](docs/LM_STUDIO_MODELS.md) to discover model ids and map them into the orchestrator.
 
-All callers should use the same cross-project request envelope and concurrency semantics described in [Unified Task Contract Plan](docs/UNIFIED_TASK_CONTRACT_PLAN.md).
+All callers must use the strict cross-project request envelope and concurrency semantics described in the [Unified Task Protocol](docs/UNIFIED_TASK_PROTOCOL.md).
 
 Applications can request any allowed LM Studio model dynamically through the queue proxy; see [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
 
@@ -203,7 +203,7 @@ This gives immediate protection when several internal services call the same loc
 
 The GPU management layer can run in either dry-run or real Docker mode. Dry-run mode is the default and records planned backend instances without starting containers. Real Docker mode is enabled with `LIFECYCLE_DRY_RUN=false` and uses the Docker vLLM adapter.
 
-For the external contract other programs should use to request capacity, model startup, GPU constraints, and task-specific limits, see [Resource Request API](docs/RESOURCE_REQUEST_API.md).
+For the external contract other programs should use to submit LLM work, request model startup, and pass GPU/task constraints, see the [Unified Task Protocol](docs/UNIFIED_TASK_PROTOCOL.md). Lower-level lifecycle allocation details are in [Resource Request API](docs/RESOURCE_REQUEST_API.md).
 
 The implemented dynamic request path is documented in [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
 

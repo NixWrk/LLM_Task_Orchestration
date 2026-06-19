@@ -43,16 +43,29 @@ class UpstreamForwarder:
         request: Request,
         body: bytes,
         upstream_base_url: str,
+        *,
+        watch_disconnect: bool = False,
     ) -> Response:
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-                upstream_response = await client.request(
-                    request.method,
-                    upstream_url(upstream_base_url, path),
-                    headers=self.upstream_headers(request),
-                    content=body,
-                    params=request.query_params,
-                )
+                if watch_disconnect:
+                    upstream_response = await self.send_buffered_with_disconnect_watch(
+                        client,
+                        path,
+                        request,
+                        body,
+                        upstream_base_url,
+                    )
+                else:
+                    upstream_response = await client.request(
+                        request.method,
+                        upstream_url(upstream_base_url, path),
+                        headers=self.upstream_headers(request),
+                        content=body,
+                        params=request.query_params,
+                    )
+        except ClientDisconnectedError:
+            raise
         except httpx.HTTPError:
             return error_response(
                 status.HTTP_502_BAD_GATEWAY,
@@ -66,6 +79,44 @@ class UpstreamForwarder:
             headers=response_headers(upstream_response.headers),
             media_type=upstream_response.headers.get("content-type"),
         )
+
+    async def send_buffered_with_disconnect_watch(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        request: Request,
+        body: bytes,
+        upstream_base_url: str,
+    ) -> httpx.Response:
+        upstream_request = client.build_request(
+            request.method,
+            upstream_url(upstream_base_url, path),
+            headers=self.upstream_headers(request),
+            content=body,
+            params=request.query_params,
+        )
+        send_task = asyncio.create_task(client.send(upstream_request, stream=False))
+        disconnect_task = asyncio.create_task(wait_for_client_disconnect(request))
+        try:
+            done, _pending = await asyncio.wait(
+                {send_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if disconnect_task in done:
+                send_task.cancel()
+                with suppress(BaseException):
+                    await send_task
+                raise ClientDisconnectedError
+
+            return send_task.result()
+        finally:
+            disconnect_task.cancel()
+            with suppress(BaseException):
+                await disconnect_task
+            if not send_task.done():
+                send_task.cancel()
+                with suppress(BaseException):
+                    await send_task
 
     async def stream_response(
         self,

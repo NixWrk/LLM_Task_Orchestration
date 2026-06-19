@@ -33,6 +33,11 @@ from queue_proxy.request_preparation import RequestPreparationService, should_st
 from queue_proxy.responses import error_response
 from queue_proxy.routing import BackendResolver
 from queue_proxy.settings import Settings
+from queue_proxy.task_queue import (
+    InMemoryTaskStore,
+    TaskProtocolError,
+    parse_task_queue_payload,
+)
 
 settings = Settings()
 configure_json_logging(settings.log_level)
@@ -48,6 +53,7 @@ backend_registry_client = (
 request_preparer = RequestPreparationService(policy_registry)
 backend_resolver = BackendResolver(settings, backend_registry_client, logger)
 forwarder = UpstreamForwarder(settings.request_timeout_seconds, settings.upstream_api_key)
+task_store = InMemoryTaskStore()
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 
 
@@ -80,6 +86,50 @@ async def proxy_status() -> dict[str, Any]:
 @app.get("/metrics")
 async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.post("/tasks/queue")
+async def submit_task_queue(request: Request) -> JSONResponse:
+    if settings.queue_proxy_api_key:
+        auth_result = validate_proxy_auth(request)
+        if auth_result is not None:
+            return auth_result
+
+    try:
+        payload = await request.json()
+        tasks = parse_task_queue_payload(payload)
+    except TaskProtocolError as exc:
+        ERRORS.labels(model="task_queue", error_type="invalid_task_protocol").inc()
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_task_protocol",
+            exc.message,
+        )
+    except json.JSONDecodeError as exc:
+        ERRORS.labels(model="task_queue", error_type="invalid_json").inc()
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_json",
+            f"Invalid JSON request body: {exc.msg}",
+        )
+
+    accepted, reused = task_store.submit_many(tasks)
+    queue_lengths = task_store.queue_lengths_by_model()
+    capacity = await reconcile_capacity(queue_lengths)
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "accepted_tasks": len(accepted),
+            "reused_tasks": len(reused),
+            "queue_lengths": queue_lengths,
+            "tasks": [
+                *(task.to_summary() for task in accepted),
+                *(task.to_summary(reused=True) for task in reused),
+            ],
+            "capacity": capacity,
+        },
+    )
 
 
 @app.api_route(
@@ -193,6 +243,7 @@ async def forward_openai_path(path: str, request: Request) -> Response:
                 request,
                 clean_body,
                 upstream_base_url,
+                watch_disconnect=True,
             )
             await release_once(response.status_code)
 
@@ -260,6 +311,27 @@ async def finish_upstream_response(
 def record_limiter_snapshot(limiter: Any) -> None:
     snapshot = limiter.snapshot()
     record_snapshot(snapshot.model, snapshot.active_requests, snapshot.queued_requests)
+
+
+async def reconcile_capacity(queue_lengths: dict[str, int]) -> dict[str, Any]:
+    if backend_registry_client is None:
+        return {
+            "state": "skipped",
+            "reason": "backend_registry_url_not_configured",
+        }
+    try:
+        result = await backend_registry_client.reconcile(queue_lengths)
+    except httpx.HTTPError as exc:
+        ERRORS.labels(model="task_queue", error_type=type(exc).__name__).inc()
+        logger.warning("task_queue_reconcile_failed error_type=%s", type(exc).__name__)
+        return {
+            "state": "failed",
+            "error_type": type(exc).__name__,
+        }
+    return {
+        "state": "reconciled",
+        "result": result,
+    }
 
 
 @app.exception_handler(PolicyError)

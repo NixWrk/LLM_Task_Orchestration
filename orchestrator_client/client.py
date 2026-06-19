@@ -62,6 +62,27 @@ class OrchestratorClient:
             timeout_seconds=self.timeout_seconds,
         )
 
+    def submit_task_queue(
+        self,
+        *,
+        model: str,
+        orchestration: dict[str, Any],
+        tasks: list[dict[str, Any]],
+        endpoint: str = "/v1/chat/completions",
+    ) -> Any:
+        return request_json(
+            "POST",
+            join_url(self.queue_url, "/tasks/queue"),
+            {
+                "model": model,
+                "endpoint": endpoint,
+                "orchestration": orchestration,
+                "tasks": tasks,
+            },
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
+
     def chat(
         self,
         model: str,

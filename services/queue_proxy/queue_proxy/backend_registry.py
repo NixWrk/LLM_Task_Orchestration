@@ -64,6 +64,15 @@ class BackendRegistryClient:
         parsed = parse_registry_instances({"instances": [instance]})
         return parsed[0] if parsed else None
 
+    async def reconcile(self, queue_lengths: dict[str, int]) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.registry_url}/reconcile",
+                json={"queue_lengths": queue_lengths},
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def lease_backend(self, instance_id: str) -> None:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(f"{self.registry_url}/registry/{instance_id}/lease")

@@ -1,6 +1,8 @@
 # Resource Request API
 
-This document describes how other programs should ask the orchestrator for LLM capacity, model startup, and resource allocation for a specific task.
+This document describes the lower-level lifecycle and capacity APIs. Client
+projects should treat [Unified Task Protocol](UNIFIED_TASK_PROTOCOL.md) as the
+canonical contract for submitting LLM work to the orchestrator.
 
 The short version:
 
@@ -18,7 +20,7 @@ For the concrete request format now supported by queue proxy and lifecycle `POST
 
 For the canonical cross-project request envelope, concurrency semantics, future
 persistent task queue, and OCR GPU coordination rules, see
-[Unified Task Contract Plan](UNIFIED_TASK_CONTRACT_PLAN.md).
+[Unified Task Protocol](UNIFIED_TASK_PROTOCOL.md).
 
 ### 1. Ask Lifecycle To Plan Or Reconcile
 
@@ -405,8 +407,14 @@ The request names the desired model/profile and passes task hints in
   "max_tokens": 1024,
   "stream": false,
   "orchestration": {
+    "schema_version": "llmo.task.v1",
+    "tenant": "elvis",
     "project": "zotero",
+    "service": "zotero-html-translate-worker",
     "task": "html_translate",
+    "job_id": "zotero:item:ABCD1234:source-html:ru",
+    "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+    "priority": "batch",
     "lms_context_length": 32768,
     "estimated_vram_gb": 20,
     "idle_ttl_seconds": 900,

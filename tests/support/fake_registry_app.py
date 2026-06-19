@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 app = FastAPI(title="fake backend registry")
 active_requests = int(os.environ.get("FAKE_REGISTRY_ACTIVE_REQUESTS", "0"))
 allocated_model = os.environ.get("FAKE_REGISTRY_MODEL", "local-main")
+last_reconcile_payload: dict[str, object] = {}
 
 
 @app.get("/health")
@@ -49,6 +50,43 @@ async def allocations(request: Request) -> dict[str, object]:
             "active_requests": active_requests,
         },
     }
+
+
+@app.post("/reconcile")
+async def reconcile(request: Request) -> dict[str, object]:
+    global last_reconcile_payload
+    payload = await request.json()
+    last_reconcile_payload = payload
+    queue_lengths = payload.get("queue_lengths", {})
+    return {
+        "dry_run": True,
+        "queue_lengths": queue_lengths,
+        "models": [
+            {
+                "model": model,
+                "ready_replicas": 0,
+                "active_replicas": 0,
+                "desired_replicas": 1 if int(length) > 0 else 0,
+                "decisions": [
+                    {
+                        "model": model,
+                        "action": "start" if int(length) > 0 else "noop",
+                        "gpu_id": "gpu0" if int(length) > 0 else None,
+                        "reason": "vram_available" if int(length) > 0 else "empty_queue",
+                        "required_vram_mb": 1024,
+                        "available_vram_mb": 24576,
+                    }
+                ],
+            }
+            for model, length in dict(queue_lengths).items()
+        ],
+        "created_instances": [],
+    }
+
+
+@app.get("/last_reconcile")
+async def last_reconcile() -> dict[str, object]:
+    return last_reconcile_payload
 
 
 @app.post("/registry/{_instance_id}/lease")

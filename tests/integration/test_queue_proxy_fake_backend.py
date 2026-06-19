@@ -273,6 +273,74 @@ def test_queue_proxy_routes_through_backend_registry(
     assert registry_response.json()["instances"][0]["active_requests"] == 0
 
 
+def test_task_queue_submission_reconciles_capacity(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    registry_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    unused_backend_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+
+    with running_fake_registry(
+        registry_port,
+        f"http://127.0.0.1:{unused_backend_port}/v1",
+    ), running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        registry_port=registry_port,
+        require_registry_backend=True,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                    "gpu": "auto",
+                    "lms_gpu": "max",
+                    "lms_context_length": 32768,
+                    "max_parallel": 1,
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:ABCD1234:source-html:ru",
+                        "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                        "artifacts": {
+                            "input_ref": "file:///data/zotero/ABCD1234/02.en.polish.html",
+                            "output_ref": "file:///data/zotero/ABCD1234/03.ru.translate.html",
+                        },
+                    },
+                    {
+                        "job_id": "zotero:item:EFGH5678:source-html:ru",
+                        "idempotency_key": "zotero:item:EFGH5678:source-html:ru:v1",
+                        "artifacts": {
+                            "input_ref": "file:///data/zotero/EFGH5678/02.en.polish.html",
+                            "output_ref": "file:///data/zotero/EFGH5678/03.ru.translate.html",
+                        },
+                    },
+                ],
+            },
+            timeout=5,
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["accepted_tasks"] == 2
+    assert body["reused_tasks"] == 0
+    assert body["queue_lengths"] == {"local-main": 2}
+    assert body["capacity"]["state"] == "reconciled"
+    assert body["capacity"]["result"]["queue_lengths"] == {"local-main": 2}
+    assert body["capacity"]["result"]["models"][0]["decisions"][0]["gpu_id"] == "gpu0"
+
+
 def test_client_timeout_before_upstream_headers_releases_registry_lease(
     tmp_path: Path,
     unused_tcp_port_factory: object,
