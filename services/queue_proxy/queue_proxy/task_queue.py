@@ -846,6 +846,27 @@ def context_plan_for_model(tasks: list[StoredTask]) -> dict[str, Any]:
     }
 
 
+def queue_lengths_for_tasks(tasks: list[StoredTask]) -> dict[str, int]:
+    lengths: dict[str, int] = {}
+    for task in tasks:
+        if task.state != "queued":
+            continue
+        lengths[task.model] = lengths.get(task.model, 0) + 1
+    return dict(sorted(lengths.items()))
+
+
+def context_plans_for_tasks(tasks: list[StoredTask]) -> dict[str, dict[str, Any]]:
+    tasks_by_model: dict[str, list[StoredTask]] = {}
+    for task in tasks:
+        if task.state != "queued":
+            continue
+        tasks_by_model.setdefault(task.model, []).append(task)
+    return {
+        model: context_plan_for_model(model_tasks)
+        for model, model_tasks in sorted(tasks_by_model.items())
+    }
+
+
 def requested_parallel_for_task(task: StoredTask) -> int:
     return (
         optional_positive_int(task.orchestration.get("lms_parallel"), "lms_parallel")

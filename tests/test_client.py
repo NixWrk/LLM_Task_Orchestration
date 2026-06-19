@@ -149,6 +149,52 @@ def test_client_task_status_methods_are_tenant_scoped(monkeypatch) -> None:
     assert calls[2][1] == "http://queue/tasks/task_123?tenant=elvis"
 
 
+def test_client_explain_methods_use_lifecycle_and_queue_urls(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None, str | None, float]] = []
+
+    def fake_request_json(
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None = None,
+        api_key: str | None = None,
+        timeout_seconds: float = 240,
+    ) -> dict[str, str]:
+        calls.append((method, url, payload, api_key, timeout_seconds))
+        return {"ok": "true"}
+
+    monkeypatch.setattr("orchestrator_client.client.request_json", fake_request_json)
+    client = OrchestratorClient(
+        queue_url="http://queue/",
+        lifecycle_url="http://lifecycle/",
+        api_key="sk-test",
+        timeout_seconds=12,
+    )
+
+    client.explain_plan(
+        queue_lengths={"local-main": 2},
+        context_plans={"local-main": {"queued_tasks": 2}},
+    )
+    client.explain_tasks(tenant="elvis", model="local-main", limit=25)
+
+    assert calls[0] == (
+        "POST",
+        "http://lifecycle/explain-plan",
+        {
+            "queue_lengths": {"local-main": 2},
+            "context_plans": {"local-main": {"queued_tasks": 2}},
+        },
+        None,
+        12,
+    )
+    assert calls[1] == (
+        "GET",
+        "http://queue/tasks/explain?tenant=elvis&limit=25&model=local-main",
+        None,
+        "sk-test",
+        12,
+    )
+
+
 def test_join_url_normalizes_slashes() -> None:
     assert join_url("http://localhost:4100/", "/v1/models") == (
         "http://localhost:4100/v1/models"

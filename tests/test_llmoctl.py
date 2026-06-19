@@ -1,3 +1,5 @@
+import json
+
 import llmoctl
 
 
@@ -126,6 +128,70 @@ def test_task_commands_call_tenant_scoped_client_methods(monkeypatch) -> None:
     )
     assert calls[1] == ("get_task", "task_123", {"tenant": "elvis"})
     assert calls[2] == ("cancel_task", "task_123", {"tenant": "elvis"})
+
+
+def test_explain_plan_command_uses_file_payload(monkeypatch, tmp_path) -> None:
+    calls = []
+
+    class FakeClient:
+        def explain_plan(self, **kwargs):
+            calls.append(("explain_plan", kwargs))
+            return {"summary": {}}
+
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        json.dumps(
+            {
+                "queue_lengths": {"local-main": 2},
+                "context_plans": {"local-main": {"queued_tasks": 2}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llmoctl, "client_from_args", lambda _args: FakeClient())
+
+    args = llmoctl.build_parser().parse_args(["explain-plan", "--file", str(plan_file)])
+
+    assert llmoctl.cmd_explain_plan(args) == {"summary": {}}
+    assert calls == [
+        (
+            "explain_plan",
+            {
+                "queue_lengths": {"local-main": 2},
+                "context_plans": {"local-main": {"queued_tasks": 2}},
+            },
+        )
+    ]
+
+
+def test_explain_plan_command_uses_tenant_queue(monkeypatch) -> None:
+    calls = []
+
+    class FakeClient:
+        def explain_tasks(self, **kwargs):
+            calls.append(("explain_tasks", kwargs))
+            return {"capacity": {}}
+
+    monkeypatch.setattr(llmoctl, "client_from_args", lambda _args: FakeClient())
+    args = llmoctl.build_parser().parse_args(
+        [
+            "explain-plan",
+            "--tenant",
+            "elvis",
+            "--model",
+            "local-main",
+            "--limit",
+            "25",
+        ]
+    )
+
+    assert llmoctl.cmd_explain_plan(args) == {"capacity": {}}
+    assert calls == [
+        (
+            "explain_tasks",
+            {"tenant": "elvis", "model": "local-main", "limit": 25},
+        )
+    ]
 
 
 def test_task_commands_require_tenant(monkeypatch) -> None:

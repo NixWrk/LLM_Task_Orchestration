@@ -206,6 +206,39 @@ class LifecycleController:
             "models": plans,
         }
 
+    async def explain_plan(
+        self,
+        queue_lengths: dict[str, int] | None = None,
+        context_plans: dict[str, ContextPlan] | None = None,
+    ) -> dict[str, Any]:
+        queue_lengths = queue_lengths or {}
+        context_plans = context_plans or {}
+        plan = await self.plan(queue_lengths, context_plans)
+        model_explanations = [
+            explain_model_plan(
+                model_plan,
+                queue_length=max(
+                    queue_lengths.get(str(model_plan.get("model") or ""), 0),
+                    int((model_plan.get("context_plan") or {}).get("queued_tasks") or 0),
+                ),
+            )
+            for model_plan in plan["models"]
+        ]
+        return {
+            "dry_run": plan["dry_run"],
+            "gpu_count": plan["gpu_count"],
+            "planning_inputs": {
+                "queue_lengths": queue_lengths,
+                "context_plans": {
+                    model: context_plan.to_dict()
+                    for model, context_plan in context_plans.items()
+                },
+            },
+            "explanations": model_explanations,
+            "plan": plan,
+            "summary": summarize_plan_explanations(model_explanations),
+        }
+
     async def reconcile(
         self,
         queue_lengths: dict[str, int] | None = None,
@@ -408,6 +441,168 @@ class LifecycleController:
             "stopped_instance": stopped,
             "instance": replacement.to_dict(),
         }
+
+
+def summarize_plan_explanations(explanations: list[dict[str, Any]]) -> dict[str, Any]:
+    waiting = [
+        explanation["model"]
+        for explanation in explanations
+        if explanation.get("waiting")
+    ]
+    blocked = [
+        explanation["model"]
+        for explanation in explanations
+        if str(explanation.get("status", "")).startswith("blocked")
+    ]
+    return {
+        "models": len(explanations),
+        "waiting_models": waiting,
+        "blocked_models": blocked,
+    }
+
+
+def explain_model_plan(
+    model_plan: dict[str, Any],
+    *,
+    queue_length: int,
+) -> dict[str, Any]:
+    model = str(model_plan.get("model") or "")
+    decisions = [
+        decision
+        for decision in model_plan.get("decisions", [])
+        if isinstance(decision, dict)
+    ]
+    reasons = [explain_decision_reason(decision) for decision in decisions]
+    next_actions = [explain_next_action(decision) for decision in decisions]
+    status = explain_status(model_plan, decisions, queue_length)
+    return {
+        "model": model,
+        "status": status,
+        "waiting": status
+        in {
+            "blocked_oversized_task",
+            "waiting_for_gpu",
+            "starting_backend",
+            "reload_required",
+            "waiting_for_capacity",
+        },
+        "queue_length": queue_length,
+        "ready_replicas": int(model_plan.get("ready_replicas") or 0),
+        "active_replicas": int(model_plan.get("active_replicas") or 0),
+        "desired_replicas": int(model_plan.get("desired_replicas") or 0),
+        "desired_backend_shape": model_plan.get("desired_backend_shape"),
+        "context_plan": model_plan.get("context_plan"),
+        "reasons": reasons,
+        "next_actions": next_actions,
+    }
+
+
+def explain_status(
+    model_plan: dict[str, Any],
+    decisions: list[dict[str, Any]],
+    queue_length: int,
+) -> str:
+    decision = decisions[0] if decisions else {}
+    action = str(decision.get("action") or "")
+    reason = str(decision.get("reason") or "")
+    ready_replicas = int(model_plan.get("ready_replicas") or 0)
+    active_replicas = int(model_plan.get("active_replicas") or 0)
+
+    if action == "reject_oversized":
+        return "blocked_oversized_task"
+    if reason == "no_gpu_with_enough_vram":
+        return "waiting_for_gpu"
+    if action == "start":
+        return "starting_backend"
+    if action == "reload":
+        return "reload_required"
+    if queue_length > 0 and ready_replicas > 0:
+        if reason == "reload_hysteresis_min_dwell":
+            return "capacity_degraded"
+        return "ready"
+    if queue_length > 0 and active_replicas > 0:
+        return "waiting_for_capacity"
+    if queue_length > 0:
+        return "waiting_for_capacity"
+    if active_replicas > 0:
+        return "idle_ready"
+    return "idle"
+
+
+def explain_decision_reason(decision: dict[str, Any]) -> dict[str, Any]:
+    reason = str(decision.get("reason") or "unknown")
+    details: dict[str, Any] = {
+        "type": reason,
+        "message": DECISION_REASON_MESSAGES.get(reason, "See raw lifecycle decision."),
+    }
+    for key in (
+        "action",
+        "gpu_id",
+        "instance_id",
+        "required_vram_mb",
+        "available_vram_mb",
+        "lms_context_length",
+        "lms_parallel",
+        "current_lms_context_length",
+        "current_lms_parallel",
+    ):
+        if decision.get(key) is not None:
+            details[key] = decision[key]
+    context_plan = decision.get("context_plan")
+    if isinstance(context_plan, dict) and context_plan.get("oversized_tasks"):
+        details["oversized_tasks"] = context_plan["oversized_tasks"]
+    return details
+
+
+def explain_next_action(decision: dict[str, Any]) -> dict[str, Any]:
+    action = str(decision.get("action") or "noop")
+    reason = str(decision.get("reason") or "")
+    if action == "start":
+        return {
+            "type": "start_backend",
+            "message": "Lifecycle can place and start a backend for this queue.",
+            "gpu_id": decision.get("gpu_id"),
+        }
+    if action == "reload":
+        return {
+            "type": "drain_and_reload",
+            "message": "Lifecycle should drain the backend and reload it with the planned LM Studio shape.",
+            "instance_id": decision.get("instance_id"),
+        }
+    if action == "reject_oversized":
+        return {
+            "type": "reject_or_split_tasks",
+            "message": "At least one task is larger than the model context cap.",
+        }
+    if reason == "no_gpu_with_enough_vram":
+        return {
+            "type": "wait_for_gpu_capacity",
+            "message": "Free or add GPU memory, reduce the requested shape, or wait for cleanup.",
+        }
+    if reason == "reload_hysteresis_min_dwell":
+        return {
+            "type": "wait_for_reload_dwell",
+            "message": "Keep using the current load until the minimum dwell window allows reload.",
+        }
+    return {
+        "type": "none",
+        "message": "No lifecycle action is required right now.",
+    }
+
+
+DECISION_REASON_MESSAGES = {
+    "desired_replicas_satisfied": "The current active backend count satisfies policy.",
+    "vram_available": "A GPU has enough free memory after current reservations.",
+    "no_gpu_with_enough_vram": "No allowed GPU has enough free memory after current reservations.",
+    "context_plan_has_oversized_tasks": "One or more queued tasks exceed the model context cap.",
+    "backend_context_too_small_for_task": "The live LM Studio context is too small for at least one queued task.",
+    "backend_context_unknown": "Lifecycle cannot read the live LM Studio context length.",
+    "backend_parallel_unknown": "Lifecycle cannot read the live LM Studio parallel slot count.",
+    "backend_context_below_desired_bucket": "The live LM Studio context is below the desired context bucket.",
+    "backend_parallel_too_small": "The live LM Studio parallel slot count is below the desired shape.",
+    "current_context_satisfies_required_tokens": "The live context fits the queued tasks, so bucket-only reload is skipped.",
+    "reload_hysteresis_min_dwell": "Reload is delayed by the model profile minimum dwell window.",
+}
 
 
 def desired_backend_shape(profile: ModelProfile) -> dict[str, Any]:

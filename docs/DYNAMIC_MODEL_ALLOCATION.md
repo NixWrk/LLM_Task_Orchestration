@@ -231,6 +231,8 @@ llmoctl embeddings text-embedding-bge-m3 "hello"
 llmoctl tasks --tenant elvis --state queued
 llmoctl task task_123 --tenant elvis
 llmoctl cancel-task task_123 --tenant elvis
+llmoctl explain-plan --tenant elvis
+llmoctl explain-plan --file .\plan.json
 llmoctl cleanup
 llmoctl metrics
 ```
@@ -242,6 +244,19 @@ LLMO_QUEUE_URL=http://localhost:4100
 LLMO_LIFECYCLE_URL=http://localhost:4300
 LLMO_API_KEY=<queue-proxy-api-key>
 LLMO_TENANT=elvis
+```
+
+`llmoctl explain-plan --tenant <tenant>` reads the tenant's queued durable tasks
+from queue proxy and asks lifecycle why the current queue is ready, waiting for
+GPU capacity, starting a backend, blocked by oversized tasks, or headed for a
+reload. `--file` can be used with a JSON object containing `queue_lengths` and
+optional `context_plans` to explain an arbitrary lifecycle plan.
+
+The same APIs are available directly:
+
+```http
+GET  http://localhost:4100/tasks/explain?tenant=elvis
+POST http://localhost:4300/explain-plan
 ```
 
 ## Cleanup And Metrics

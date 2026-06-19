@@ -80,6 +80,22 @@ class BackendRegistryClient:
             response.raise_for_status()
             return response.json()
 
+    async def explain_plan(
+        self,
+        queue_lengths: dict[str, int],
+        context_plans: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"queue_lengths": queue_lengths}
+        if context_plans is not None:
+            payload["context_plans"] = context_plans
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.registry_url}/explain-plan",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def lease_backend(self, instance_id: str) -> None:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(f"{self.registry_url}/registry/{instance_id}/lease")

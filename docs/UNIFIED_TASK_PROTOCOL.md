@@ -929,6 +929,9 @@ Implemented now:
     matching unowned LM Studio loads as `external` registry records, reserves
     their estimated VRAM, and applies reload hysteresis before non-critical
     shape changes.
+26. Lifecycle `POST /explain-plan`, queue proxy `GET /tasks/explain`, and
+    `llmoctl explain-plan` expose machine-readable placement/reload explanations
+    for current tenant queues or supplied plan JSON.
 
 Needed next:
 
@@ -937,7 +940,7 @@ Needed next:
 3. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
    placement, and backend ownership.
 4. Formal Postgres migration tooling and real-container integration tests.
-5. Task execution logs and operator-facing status explanations.
+5. Task execution logs and richer operator-facing task status history.
 6. Zotero HTML queue submission with employer-provided payloads/prompts and
    artifact references.
 7. Allocation ids and task ownership in lifecycle.

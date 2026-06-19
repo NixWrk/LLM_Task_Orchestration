@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 
@@ -64,6 +65,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     metrics = subparsers.add_parser("metrics", help="Print lifecycle Prometheus metrics")
     metrics.set_defaults(func=cmd_metrics)
+
+    explain_plan = subparsers.add_parser(
+        "explain-plan",
+        help="Explain lifecycle placement for a plan file or current tenant queue",
+    )
+    explain_plan.add_argument("--file", help="JSON file with queue_lengths/context_plans.")
+    add_tenant_arg(explain_plan)
+    explain_plan.add_argument("--model")
+    explain_plan.add_argument("--limit", type=int, default=500)
+    explain_plan.set_defaults(func=cmd_explain_plan)
 
     tasks = subparsers.add_parser("tasks", help="List durable tasks for a tenant")
     add_task_query_args(tasks)
@@ -129,6 +140,23 @@ def cmd_cleanup(args: argparse.Namespace) -> Any:
 
 def cmd_metrics(args: argparse.Namespace) -> str:
     return client_from_args(args).metrics()
+
+
+def cmd_explain_plan(args: argparse.Namespace) -> Any:
+    client = client_from_args(args)
+    if args.file:
+        payload = read_json_file(args.file)
+        if not isinstance(payload, dict):
+            raise CliError("explain-plan --file must contain a JSON object.")
+        return client.explain_plan(
+            queue_lengths=payload.get("queue_lengths") or {},
+            context_plans=payload.get("context_plans"),
+        )
+    return client.explain_tasks(
+        tenant=require_tenant(args),
+        model=args.model,
+        limit=args.limit,
+    )
 
 
 def cmd_tasks(args: argparse.Namespace) -> Any:
@@ -224,6 +252,15 @@ def require_tenant(args: argparse.Namespace) -> str:
     if not tenant:
         raise CliError("durable task commands require --tenant or LLMO_TENANT.")
     return tenant
+
+
+def read_json_file(path: str) -> Any:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise CliError(f"cannot read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise CliError(f"invalid JSON in {path}: {exc.msg}") from exc
 
 
 def print_json(value: Any) -> None:

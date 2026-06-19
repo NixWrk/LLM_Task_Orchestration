@@ -164,6 +164,36 @@ def test_plan_starts_lmstudio_with_context_plan_shape(
     assert decision["lms_parallel"] == 2
 
 
+def test_explain_plan_reports_waiting_start_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    controller = lifecycle_controller_for_plan(tmp_path)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.explain_plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    explanation = result["explanations"][0]
+    assert explanation["model"] == "local-main"
+    assert explanation["status"] == "starting_backend"
+    assert explanation["waiting"] is True
+    assert explanation["reasons"][0]["type"] == "vram_available"
+    assert explanation["next_actions"][0]["type"] == "start_backend"
+    assert result["summary"]["waiting_models"] == ["local-main"]
+
+
 def test_plan_returns_reload_when_lmstudio_shape_is_too_small(
     tmp_path: Path,
     monkeypatch,

@@ -295,7 +295,9 @@ Status:
    changes.
 6. Done: live LM Studio ownership reconciliation distinguishes lifecycle-owned
    loads from external loads before reload/cleanup.
-7. Next: add reload/reconciliation metrics and operator-facing explanations.
+7. Done: operator-facing plan explanations are exposed through lifecycle and
+   `llmoctl explain-plan`.
+8. Next: add reload/reconciliation metrics.
 
 ### Tasks
 
@@ -449,8 +451,10 @@ Status:
    - execution duration.
 2. Done: `llmoctl tasks`, `llmoctl task <id>`, and `llmoctl cancel-task <id>`
    inspect and control tenant-scoped durable tasks.
-3. Next: add lifecycle/reload/GPU metrics, richer structured logs, dashboards,
-   and plan-explanation CLI commands.
+3. Done: lifecycle `POST /explain-plan`, queue proxy `GET /tasks/explain`, and
+   `llmoctl explain-plan` explain current queue placement/reload decisions.
+4. Next: add lifecycle/reload/GPU metrics, richer structured logs, and
+   dashboards.
 
 ### Tasks
 

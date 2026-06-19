@@ -46,7 +46,9 @@ from queue_proxy.task_queue import (
     StoredTask,
     TaskProtocolError,
     build_task_store,
+    context_plans_for_tasks,
     parse_task_queue_payload,
+    queue_lengths_for_tasks,
 )
 
 settings = Settings()
@@ -196,6 +198,47 @@ async def list_tasks(request: Request) -> JSONResponse:
         limit=limit,
     )
     return JSONResponse({"tasks": [task.to_summary() for task in tasks]})
+
+
+@app.get("/tasks/explain")
+async def explain_tasks(request: Request) -> JSONResponse:
+    if settings.queue_proxy_api_key:
+        auth_result = validate_proxy_auth(request)
+        if auth_result is not None:
+            return auth_result
+
+    tenant = tenant_from_request(request)
+    if tenant is None:
+        return missing_tenant_response()
+    raw_limit = request.query_params.get("limit", "500")
+    try:
+        limit = max(1, min(int(raw_limit), 1000))
+    except ValueError:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_task_query",
+            "limit must be an integer.",
+        )
+
+    tasks = task_store.list_tasks(
+        tenant,
+        state="queued",
+        model=request.query_params.get("model"),
+        limit=limit,
+    )
+    queue_lengths = queue_lengths_for_tasks(tasks)
+    context_plans = context_plans_for_tasks(tasks)
+    capacity = await explain_capacity(queue_lengths, context_plans)
+    return JSONResponse(
+        {
+            "tenant": tenant,
+            "scope": "tenant_queued_tasks",
+            "queue_lengths": queue_lengths,
+            "context_plans": context_plans,
+            "tasks": [task.to_summary() for task in tasks],
+            "capacity": capacity,
+        }
+    )
 
 
 @app.get("/tasks/{task_id}")
@@ -441,6 +484,30 @@ async def reconcile_capacity(
         }
     return {
         "state": "reconciled",
+        "result": result,
+    }
+
+
+async def explain_capacity(
+    queue_lengths: dict[str, int],
+    context_plans: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if backend_registry_client is None:
+        return {
+            "state": "skipped",
+            "reason": "backend_registry_url_not_configured",
+        }
+    try:
+        result = await backend_registry_client.explain_plan(queue_lengths, context_plans)
+    except httpx.HTTPError as exc:
+        ERRORS.labels(model="task_queue", error_type=type(exc).__name__).inc()
+        logger.warning("task_queue_explain_failed error_type=%s", type(exc).__name__)
+        return {
+            "state": "failed",
+            "error_type": type(exc).__name__,
+        }
+    return {
+        "state": "explained",
         "result": result,
     }
 

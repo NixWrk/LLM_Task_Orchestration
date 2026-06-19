@@ -45,6 +45,22 @@ class OrchestratorClient:
             timeout_seconds=self.timeout_seconds,
         )
 
+    def explain_plan(
+        self,
+        *,
+        queue_lengths: dict[str, int] | None = None,
+        context_plans: dict[str, dict[str, Any]] | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {"queue_lengths": queue_lengths or {}}
+        if context_plans is not None:
+            payload["context_plans"] = context_plans
+        return request_json(
+            "POST",
+            join_url(self.lifecycle_url, "/explain-plan"),
+            payload,
+            timeout_seconds=self.timeout_seconds,
+        )
+
     def metrics(self) -> str:
         return request_text(
             "GET",
@@ -107,6 +123,23 @@ class OrchestratorClient:
         return request_json(
             "GET",
             join_url(self.queue_url, f"/tasks?{urlencode(params)}"),
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def explain_tasks(
+        self,
+        *,
+        tenant: str,
+        model: str | None = None,
+        limit: int = 500,
+    ) -> Any:
+        params: dict[str, str] = {"tenant": tenant, "limit": str(limit)}
+        if model:
+            params["model"] = model
+        return request_json(
+            "GET",
+            join_url(self.queue_url, f"/tasks/explain?{urlencode(params)}"),
             api_key=self.api_key,
             timeout_seconds=self.timeout_seconds,
         )

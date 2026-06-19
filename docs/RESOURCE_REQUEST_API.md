@@ -341,6 +341,11 @@ llmoctl allocate qwen/qwen3.5-9b --gpu auto --lms-gpu max --lms-context-length 8
 llmoctl chat qwen/qwen3.5-9b "Return exactly: ok" --max-tokens 8
 llmoctl chat qwen/qwen3.5-9b "stream" --stream
 llmoctl embeddings text-embedding-bge-m3 "hello"
+llmoctl tasks --tenant elvis --state queued
+llmoctl task task_123 --tenant elvis
+llmoctl cancel-task task_123 --tenant elvis
+llmoctl explain-plan --tenant elvis
+llmoctl explain-plan --file .\plan.json
 llmoctl cleanup
 llmoctl metrics
 ```

@@ -103,6 +103,16 @@ async def plan(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/explain-plan")
+async def explain_plan(request: Request) -> JSONResponse:
+    payload = await request.json()
+    result = await controller.explain_plan(
+        queue_lengths_from_payload(payload),
+        context_plans_from_payload(payload),
+    )
+    return JSONResponse(result)
+
+
 @app.post("/reconcile")
 async def reconcile(request: Request) -> JSONResponse:
     payload = await request.json()
