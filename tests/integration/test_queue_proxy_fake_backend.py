@@ -671,6 +671,60 @@ def test_task_executor_does_not_retry_missing_payload(
     assert task_status["error"]["type"] == "missing_task_payload"
 
 
+def test_task_executor_rejects_non_openai_task_payload_without_retry(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+
+    with running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        task_store_path=task_store_path,
+        task_executor_enabled=True,
+        task_executor_max_attempts=5,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "endpoint": "/v1/chat/completions",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:WORKER_PAYLOAD:source-html:ru",
+                        "idempotency_key": "zotero:item:WORKER_PAYLOAD:source-html:ru:v1",
+                        "payload": {
+                            "run_name": "planned",
+                            "source_stage": "02.en.polish.html",
+                            "target_stage": "03.ru.translate.html",
+                        },
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        task_status = wait_for_task_state(proxy_port, task_id, "elvis", "failed")
+
+    assert response.status_code == 202
+    assert task_status["attempt_count"] == 1
+    assert task_status["error"]["retryable"] is False
+    assert task_status["error"]["type"] == "invalid_task_payload"
+    assert task_status["error"]["endpoint"] == "/v1/chat/completions"
+
+
 def test_client_timeout_before_upstream_headers_releases_registry_lease(
     tmp_path: Path,
     unused_tcp_port_factory: object,

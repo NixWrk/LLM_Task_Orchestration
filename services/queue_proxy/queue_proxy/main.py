@@ -480,6 +480,11 @@ async def execute_stored_task(task: StoredTask) -> None:
         )
         return
 
+    payload_error = validate_executable_task_payload(task)
+    if payload_error is not None:
+        record_task_failure(task, payload_error, retryable=False)
+        return
+
     try:
         policy = policy_registry.resolve(task.model)
     except PolicyError as exc:
@@ -607,6 +612,57 @@ def retry_delay_seconds(attempt_count: int) -> float:
 
 def is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
+def validate_executable_task_payload(task: StoredTask) -> dict[str, Any] | None:
+    endpoint = task.endpoint.strip().lower()
+    payload = task.payload
+    if endpoint.endswith("/chat/completions"):
+        if is_non_empty_list(payload.get("messages")):
+            return None
+        return invalid_task_payload_error(
+            task,
+            "chat completions tasks require payload.messages.",
+        )
+    if endpoint.endswith("/responses"):
+        if payload.get("input") not in (None, "") or is_non_empty_list(payload.get("messages")):
+            return None
+        return invalid_task_payload_error(
+            task,
+            "responses tasks require payload.input or payload.messages.",
+        )
+    if endpoint.endswith("/completions"):
+        if payload.get("prompt") not in (None, ""):
+            return None
+        return invalid_task_payload_error(
+            task,
+            "completions tasks require payload.prompt.",
+        )
+    if endpoint.endswith("/embeddings"):
+        if payload.get("input") not in (None, ""):
+            return None
+        return invalid_task_payload_error(
+            task,
+            "embeddings tasks require payload.input.",
+        )
+    if any(payload.get(key) not in (None, "") for key in ("messages", "input", "prompt")):
+        return None
+    return invalid_task_payload_error(
+        task,
+        "durable task payload must contain OpenAI-compatible input.",
+    )
+
+
+def invalid_task_payload_error(task: StoredTask, message: str) -> dict[str, Any]:
+    return {
+        "type": "invalid_task_payload",
+        "message": message,
+        "endpoint": task.endpoint,
+    }
+
+
+def is_non_empty_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value)
 
 
 def seconds_between(start: str | None, end: str | None) -> float:

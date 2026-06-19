@@ -651,6 +651,7 @@ Stable error types:
 | `runtime_adapter_unavailable` | Requested runtime cannot be controlled. |
 | `runtime_start_failed` | Backend process/container failed to start. |
 | `warmup_failed` | Backend did not pass warmup. |
+| `invalid_task_payload` | Durable task payload is not executable for its endpoint. |
 | `upstream_request_failed` | Backend request failed after routing. |
 | `client_disconnected` | Client disconnected before completion. |
 | `allocation_expired` | Durable allocation or task exceeded TTL. |
@@ -736,6 +737,13 @@ the accepted task is being or was executed:
 Retryable executor failures return to `queued` with `next_attempt_at`.
 Permanent failures, or retryable failures after the configured attempt limit,
 end in `failed`.
+
+The durable executor validates endpoint-specific OpenAI-compatible input before
+routing. For example, `/v1/chat/completions` tasks must include
+`payload.messages`, `/v1/responses` tasks must include `payload.input` or
+`payload.messages`, `/v1/completions` tasks must include `payload.prompt`, and
+`/v1/embeddings` tasks must include `payload.input`. Non-executable worker
+metadata is rejected as `invalid_task_payload` with `retryable: false`.
 
 ## Client Rules
 
@@ -869,6 +877,9 @@ Implemented now:
    `(tenant, project, service, task, priority, model)` employer groups.
 21. Durable task metrics on `/metrics` for lifecycle events, task errors,
     current task states, queue wait time, and execution duration.
+22. Durable executor validates endpoint-specific OpenAI-compatible payloads
+    before routing and marks non-executable worker metadata as
+    `invalid_task_payload`.
 
 Needed next:
 

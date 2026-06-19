@@ -337,7 +337,10 @@ Status:
    group cannot drain its whole batch before another due group gets a turn.
 8. Done: first task execution metrics for events, errors, queue wait,
    execution duration, and current task state counts.
-9. Next: add employer-provided payload/template integration for HTML
+9. Done: executor validates endpoint-specific OpenAI-compatible payload shape
+   before routing, so worker metadata is not accidentally sent to an LLM
+   backend as a chat request.
+10. Next: add employer-provided payload/template integration for HTML
    translation tasks.
 
 ### Tasks
@@ -379,6 +382,18 @@ Status:
 ## Phase 7: Zotero HTML Translation Integration
 
 Make the first real client use the protocol.
+
+Status:
+
+1. Observed: `zotero-html-translate-worker` can build and submit a task queue,
+   but its current per-task `payload` is worker-runner metadata, not an
+   executable OpenAI-compatible chat payload.
+2. Done on orchestrator side: such a non-executable payload now fails with
+   stable `invalid_task_payload` and `retryable: false` instead of being sent to
+   LM Studio.
+3. Next: update the worker to submit either a real OpenAI-compatible payload
+   for each durable task or an explicit employer-owned template that the
+   orchestrator can render without inventing prompts.
 
 ### Tasks
 
