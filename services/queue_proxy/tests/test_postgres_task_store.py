@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from queue_proxy.postgres_task_store import PostgresTaskStore
+from queue_proxy.postgres_task_store import (
+    TASK_STORE_SCHEMA_KEY,
+    TASK_STORE_SCHEMA_VERSION,
+    PostgresTaskStore,
+)
 from queue_proxy.task_queue import parse_task_queue_payload
 
 
@@ -18,6 +22,7 @@ def test_postgres_task_store_submits_and_reuses_by_tenant_idempotency() -> None:
     duplicate_accepted, duplicate_reused = store.submit_many(tasks)
 
     assert database.schema_initialized is True
+    assert database.metadata[TASK_STORE_SCHEMA_KEY] == str(TASK_STORE_SCHEMA_VERSION)
     assert len(accepted) == 2
     assert reused == []
     assert duplicate_accepted == []
@@ -25,6 +30,36 @@ def test_postgres_task_store_submits_and_reuses_by_tenant_idempotency() -> None:
         task.task_id for task in accepted
     ]
     assert store.queue_lengths_by_model() == {"local-main": 2}
+
+
+def test_postgres_task_store_rejects_newer_schema_version() -> None:
+    database = FakePostgresDatabase()
+    database.metadata[TASK_STORE_SCHEMA_KEY] = str(TASK_STORE_SCHEMA_VERSION + 1)
+
+    try:
+        PostgresTaskStore(
+            "postgresql://test",
+            connect_factory=database.connect,
+        )
+    except RuntimeError as exc:
+        assert "schema is newer" in str(exc)
+    else:
+        raise AssertionError("PostgresTaskStore should reject a newer schema.")
+
+
+def test_postgres_task_store_rejects_invalid_schema_version() -> None:
+    database = FakePostgresDatabase()
+    database.metadata[TASK_STORE_SCHEMA_KEY] = "future-ish"
+
+    try:
+        PostgresTaskStore(
+            "postgresql://test",
+            connect_factory=database.connect,
+        )
+    except RuntimeError as exc:
+        assert "Invalid Postgres task store schema version" in str(exc)
+    else:
+        raise AssertionError("PostgresTaskStore should reject an invalid schema version.")
 
 
 def test_postgres_task_store_claim_result_and_context_plan() -> None:
@@ -154,6 +189,7 @@ def sample_tasks():
 class FakePostgresDatabase:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
+        self.metadata: dict[str, str] = {}
         self.schema_initialized = False
 
     def connect(self) -> FakeConnection:
@@ -197,6 +233,15 @@ class FakeCursor:
             or normalized.startswith("alter table")
         ):
             self.database.schema_initialized = True
+            self.rows = []
+            return
+        if normalized.startswith("select value from llmo_schema_metadata"):
+            value = self.database.metadata.get(params[0])
+            self.rows = [] if value is None else [{"value": value}]
+            return
+        if normalized.startswith("insert into llmo_schema_metadata"):
+            key, value, _updated_at = params
+            self.database.metadata[str(key)] = str(value)
             self.rows = []
             return
         if normalized.startswith("insert into llmo_tasks"):

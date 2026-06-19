@@ -855,9 +855,10 @@ Current local durable mode uses `JsonFileTaskStore`, enabled by setting
 store for ephemeral development and tests.
 
 Production compose mode can use `PostgresTaskStore` by setting
-`TASK_STORE_BACKEND=postgres` and `TASK_STORE_DSN`. The store creates the initial
-task table and indexes on startup; formal migration tooling is still a next
-step.
+`TASK_STORE_BACKEND=postgres` and `TASK_STORE_DSN`. The store creates the
+initial task table, indexes, and `llmo_schema_metadata` on startup. Startup
+records `task_store_schema_version` and refuses to run when the database schema
+is newer than the code. Formal migration tooling is still a next step.
 
 Minimum durable task fields:
 
@@ -932,6 +933,8 @@ Implemented now:
 26. Lifecycle `POST /explain-plan`, queue proxy `GET /tasks/explain`, and
     `llmoctl explain-plan` expose machine-readable placement/reload explanations
     for current tenant queues or supplied plan JSON.
+27. Postgres task store startup records and checks `task_store_schema_version`
+    in `llmo_schema_metadata`.
 
 Needed next:
 

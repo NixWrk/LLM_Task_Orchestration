@@ -46,6 +46,8 @@ TASK_COLUMNS = (
 )
 TASK_COLUMNS_SQL = ", ".join(TASK_COLUMNS)
 TASK_RETURNING_SQL = f"RETURNING {TASK_COLUMNS_SQL}"
+TASK_STORE_SCHEMA_KEY = "task_store_schema_version"
+TASK_STORE_SCHEMA_VERSION = 2
 
 
 class PostgresTaskStore(TaskStore):
@@ -413,6 +415,24 @@ class PostgresTaskStore(TaskStore):
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS llmo_schema_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                current_version = self.read_schema_version(cur)
+                if (
+                    current_version is not None
+                    and current_version > TASK_STORE_SCHEMA_VERSION
+                ):
+                    raise RuntimeError(
+                        "Postgres task store schema is newer than this code: "
+                        f"database={current_version}, code={TASK_STORE_SCHEMA_VERSION}."
+                    )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS llmo_tasks (
                         task_id TEXT PRIMARY KEY,
                         tenant TEXT NOT NULL,
@@ -489,7 +509,40 @@ class PostgresTaskStore(TaskStore):
                     WHERE attempt_count > 0
                     """
                 )
+                self.write_schema_version(cur, TASK_STORE_SCHEMA_VERSION)
             conn.commit()
+
+    def read_schema_version(self, cur: Any) -> int | None:
+        cur.execute(
+            """
+            SELECT value
+            FROM llmo_schema_metadata
+            WHERE key = %s
+            """,
+            (TASK_STORE_SCHEMA_KEY,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        raw_value = dict(row).get("value")
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid Postgres task store schema version: {raw_value!r}."
+            ) from exc
+
+    def write_schema_version(self, cur: Any, version: int) -> None:
+        cur.execute(
+            """
+            INSERT INTO llmo_schema_metadata (key, value, updated_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (TASK_STORE_SCHEMA_KEY, str(version), now_iso()),
+        )
 
     def insert_task(self, cur: Any, task: QueueTask) -> StoredTask | None:
         now = now_iso()

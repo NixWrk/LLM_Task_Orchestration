@@ -104,7 +104,9 @@ Status:
    `TASK_STORE_DSN`, with startup schema creation.
 6. Done: retry metadata (`attempt_count`, `next_attempt_at`) is stored durably
    in JSON and Postgres.
-7. Next: add migration tooling and integration tests against a real Postgres
+7. Done: Postgres startup schema records `task_store_schema_version` and
+   rejects a database schema that is newer than the running code.
+8. Next: add migration tooling and integration tests against a real Postgres
    container for multi-worker production execution.
 
 ### Tasks
