@@ -782,6 +782,11 @@ Implemented now:
    `lms load --estimate-only`.
 14. Initial graceful reload state machine: drain active loads, reload idle owned
    loads, and skip unowned/pre-existing LM Studio loads.
+15. Tenant-scoped task status APIs:
+   `GET /tasks`, `GET /tasks/{task_id}`, and `DELETE /tasks/{task_id}`.
+16. Optional durable task executor enabled by `TASK_EXECUTOR_ENABLED`; it claims
+   queued tasks with stored OpenAI-compatible payloads, routes through backend
+   resolver, records results/errors, and releases backend leases.
 
 Needed next:
 
@@ -790,6 +795,8 @@ Needed next:
 3. Metrics/log labels from task metadata.
 4. Tenant-scoped list/status APIs and production Postgres task store.
 5. Reload hysteresis and live LM Studio ownership reconciliation.
-6. Allocation ids and task ownership in lifecycle.
-7. External GPU reservation API for non-LLM consumers such as OCR.
-8. Python client helpers that build the canonical envelope.
+6. Retry policy, fair multi-tenant task claiming, and task execution metrics.
+7. Zotero HTML artifact-to-payload execution mode.
+8. Allocation ids and task ownership in lifecycle.
+9. External GPU reservation API for non-LLM consumers such as OCR.
+10. Python client helpers that build the canonical envelope.

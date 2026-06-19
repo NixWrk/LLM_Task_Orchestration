@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     require_backend_registry_backend: bool = False
     queue_proxy_api_key: str = ""
     task_store_path: str = Field(default="", validation_alias="TASK_STORE_PATH")
+    task_executor_enabled: bool = Field(default=False, validation_alias="TASK_EXECUTOR_ENABLED")
+    task_executor_interval_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        validation_alias="TASK_EXECUTOR_INTERVAL_SECONDS",
+    )
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     log_level: str = "INFO"
 

@@ -166,6 +166,77 @@ def test_json_file_task_store_persists_tasks_and_idempotency(tmp_path) -> None:
     )
 
 
+def test_task_store_status_claim_and_result_flow() -> None:
+    tasks = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:ABCD1234:source-html:ru",
+                    "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                    "payload": {
+                        "model": "zotero-html-translate",
+                        "messages": [{"role": "user", "content": "translate"}],
+                    },
+                }
+            ],
+        }
+    )
+    store = InMemoryTaskStore()
+
+    accepted, _reused = store.submit_many(tasks)
+    task = accepted[0]
+    claimed = store.claim_next()
+    completed = store.record_result(task.task_id, {"body": {"ok": True}})
+
+    assert claimed == task
+    assert store.get_task("other", task.task_id) is None
+    assert store.get_task("elvis", task.task_id) == task
+    assert store.list_tasks("elvis", state="succeeded") == [task]
+    assert completed.state == "succeeded"
+    assert completed.result == {"body": {"ok": True}}
+    assert completed.finished_at is not None
+
+
+def test_task_store_cancel_is_tenant_scoped() -> None:
+    tasks = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:ABCD1234:source-html:ru",
+                    "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                }
+            ],
+        }
+    )
+    store = InMemoryTaskStore()
+    accepted, _reused = store.submit_many(tasks)
+
+    assert store.cancel_task("other", accepted[0].task_id) is None
+    cancelled = store.cancel_task("elvis", accepted[0].task_id)
+
+    assert cancelled is not None
+    assert cancelled.state == "cancelled"
+    assert store.queue_lengths_by_model() == {}
+
+
 def test_context_bucket_returns_next_bucket() -> None:
     assert context_bucket(4096) == 4096
     assert context_bucket(4097) == 8192

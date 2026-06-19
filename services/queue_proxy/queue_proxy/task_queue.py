@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from typing import Protocol
@@ -9,7 +10,14 @@ from uuid import uuid4
 
 SCHEMA_VERSION = "llmo.task.v1"
 ACTIVE_STATES = {"submitted", "queued", "allocating", "starting", "warming", "running"}
+CLAIMABLE_STATES = {"queued"}
 PRIORITIES = {"interactive", "foreground", "batch", "maintenance"}
+PRIORITY_ORDER = {
+    "interactive": 0,
+    "foreground": 1,
+    "batch": 2,
+    "maintenance": 3,
+}
 CONTEXT_BUCKETS = (2048, 4096, 8192, 16384, 32768, 65536, 131072)
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
@@ -61,6 +69,12 @@ class StoredTask:
     orchestration: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)
     labels: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: now_iso())
+    updated_at: str = field(default_factory=lambda: now_iso())
+    started_at: str | None = None
+    finished_at: str | None = None
+    result: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
 
     def to_summary(self, *, reused: bool = False) -> dict[str, Any]:
         return {
@@ -78,8 +92,26 @@ class StoredTask:
             "max_output_tokens": self.max_output_tokens,
             "required_context_tokens": self.required_context_tokens,
             "state": self.state,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "reused": reused,
         }
+
+    def to_detail(self) -> dict[str, Any]:
+        detail = self.to_summary()
+        detail.update(
+            {
+                "payload": self.payload,
+                "orchestration": self.orchestration,
+                "artifacts": self.artifacts,
+                "labels": self.labels,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+                "result": self.result,
+                "error": self.error,
+            }
+        )
+        return detail
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -101,6 +133,12 @@ class StoredTask:
             "orchestration": self.orchestration,
             "artifacts": self.artifacts,
             "labels": self.labels,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "result": self.result,
+            "error": self.error,
         }
 
     @classmethod
@@ -139,6 +177,12 @@ class StoredTask:
             orchestration=optional_mapping(record.get("orchestration"), "orchestration"),
             artifacts=optional_mapping(record.get("artifacts"), "artifacts"),
             labels=optional_mapping(record.get("labels"), "labels"),
+            created_at=optional_string(record.get("created_at")) or now_iso(),
+            updated_at=optional_string(record.get("updated_at")) or now_iso(),
+            started_at=optional_string(record.get("started_at")),
+            finished_at=optional_string(record.get("finished_at")),
+            result=optional_mapping_or_none(record.get("result"), "result"),
+            error=optional_mapping_or_none(record.get("error"), "error"),
         )
 
 
@@ -150,6 +194,31 @@ class TaskStore(Protocol):
         ...
 
     def context_plans_by_model(self) -> dict[str, dict[str, Any]]:
+        ...
+
+    def get_task(self, tenant: str, task_id: str) -> StoredTask | None:
+        ...
+
+    def list_tasks(
+        self,
+        tenant: str,
+        *,
+        state: str | None = None,
+        model: str | None = None,
+        limit: int = 100,
+    ) -> list[StoredTask]:
+        ...
+
+    def claim_next(self, *, model: str | None = None) -> StoredTask | None:
+        ...
+
+    def record_result(self, task_id: str, result: dict[str, Any]) -> StoredTask:
+        ...
+
+    def record_error(self, task_id: str, error: dict[str, Any]) -> StoredTask:
+        ...
+
+    def cancel_task(self, tenant: str, task_id: str) -> StoredTask | None:
         ...
 
 
@@ -210,6 +279,83 @@ class InMemoryTaskStore:
             model: context_plan_for_model(tasks)
             for model, tasks in sorted(tasks_by_model.items())
         }
+
+    def get_task(self, tenant: str, task_id: str) -> StoredTask | None:
+        task = self._tasks_by_id.get(task_id)
+        if task is None or task.tenant != tenant:
+            return None
+        return task
+
+    def list_tasks(
+        self,
+        tenant: str,
+        *,
+        state: str | None = None,
+        model: str | None = None,
+        limit: int = 100,
+    ) -> list[StoredTask]:
+        tasks = [
+            task
+            for task in self._tasks_by_id.values()
+            if task.tenant == tenant
+            and (state is None or task.state == state)
+            and (model is None or task.model == model)
+        ]
+        tasks.sort(key=lambda task: (task.created_at, task.task_id))
+        return tasks[: max(1, limit)]
+
+    def claim_next(self, *, model: str | None = None) -> StoredTask | None:
+        candidates = [
+            task
+            for task in self._tasks_by_id.values()
+            if task.state in CLAIMABLE_STATES and (model is None or task.model == model)
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda task: (
+                PRIORITY_ORDER.get(task.priority, 99),
+                task.created_at,
+                task.task_id,
+            )
+        )
+        task = candidates[0]
+        task.state = "running"
+        task.started_at = task.started_at or now_iso()
+        task.updated_at = now_iso()
+        self._after_mutation()
+        return task
+
+    def record_result(self, task_id: str, result: dict[str, Any]) -> StoredTask:
+        task = self._tasks_by_id[task_id]
+        task.state = "succeeded"
+        task.result = result
+        task.error = None
+        task.finished_at = now_iso()
+        task.updated_at = task.finished_at
+        self._after_mutation()
+        return task
+
+    def record_error(self, task_id: str, error: dict[str, Any]) -> StoredTask:
+        task = self._tasks_by_id[task_id]
+        task.state = "failed"
+        task.error = error
+        task.finished_at = now_iso()
+        task.updated_at = task.finished_at
+        self._after_mutation()
+        return task
+
+    def cancel_task(self, tenant: str, task_id: str) -> StoredTask | None:
+        task = self.get_task(tenant, task_id)
+        if task is None:
+            return None
+        if task.state in {"succeeded", "failed", "cancelled"}:
+            return task
+        task.state = "cancelled"
+        task.finished_at = now_iso()
+        task.updated_at = task.finished_at
+        self._after_mutation()
+        return task
 
     def _after_mutation(self) -> None:
         return None
@@ -376,6 +522,14 @@ def optional_mapping(value: Any, field_name: str) -> dict[str, Any]:
     return value
 
 
+def optional_mapping_or_none(value: Any, field_name: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TaskProtocolError(f"{field_name} must be a JSON object.")
+    return value
+
+
 def required_string(payload: dict[str, Any], field_name: str) -> str:
     return string_value(payload.get(field_name), field_name)
 
@@ -384,6 +538,12 @@ def string_value(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TaskProtocolError(f"{field_name} must be a non-empty string.")
     return value.strip()
+
+
+def optional_string(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def task_tokens(
@@ -538,3 +698,7 @@ def context_bucket(required_context_tokens: int) -> int:
         if required <= bucket:
             return bucket
     return required
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).isoformat()

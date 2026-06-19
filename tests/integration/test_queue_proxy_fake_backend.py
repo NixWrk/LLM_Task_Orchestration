@@ -445,6 +445,116 @@ def test_task_queue_submission_survives_queue_proxy_restart(
     ] == [task["task_id"] for task in first_body["tasks"]]
 
 
+def test_task_status_api_is_tenant_scoped(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+
+    with running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:ABCD1234:source-html:ru",
+                        "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        list_response = httpx.get(
+            f"http://127.0.0.1:{proxy_port}/tasks",
+            params={"tenant": "elvis"},
+            timeout=5,
+        )
+        other_tenant_response = httpx.get(
+            f"http://127.0.0.1:{proxy_port}/tasks/{task_id}",
+            params={"tenant": "other"},
+            timeout=5,
+        )
+        cancel_response = httpx.delete(
+            f"http://127.0.0.1:{proxy_port}/tasks/{task_id}",
+            headers={"x-tenant-id": "elvis"},
+            timeout=5,
+        )
+
+    assert response.status_code == 202
+    assert list_response.status_code == 200
+    assert list_response.json()["tasks"][0]["task_id"] == task_id
+    assert other_tenant_response.status_code == 404
+    assert other_tenant_response.json()["error"]["type"] == "task_not_found"
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["state"] == "cancelled"
+
+
+def test_task_executor_runs_payload_and_records_result(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+
+    with running_fake_backend(fake_port), running_queue_proxy(
+        proxy_port,
+        fake_port,
+        config_path,
+        task_store_path=task_store_path,
+        task_executor_enabled=True,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:ABCD1234:source-html:ru",
+                        "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                        "payload": {
+                            "model": "local-main",
+                            "messages": [{"role": "user", "content": "hello"}],
+                            "max_tokens": 8,
+                        },
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        task_status = wait_for_task_state(proxy_port, task_id, "elvis", "succeeded")
+
+    assert response.status_code == 202
+    assert task_status["result"]["status_code"] == 200
+    assert task_status["result"]["body"]["choices"][0]["message"]["content"] == "ok"
+
+
 def test_client_timeout_before_upstream_headers_releases_registry_lease(
     tmp_path: Path,
     unused_tcp_port_factory: object,
@@ -720,3 +830,25 @@ def test_lifecycle_cleanup_drains_idle_dynamic_lmstudio_allocation(
     assert response.status_code == 200
     assert response.json()["stopped_instances"][0]["instance_id"] == "idle-dynamic"
     assert response.json()["stopped_instances"][0]["state"] == "stopped"
+
+
+def wait_for_task_state(
+    proxy_port: int,
+    task_id: str,
+    tenant: str,
+    state: str,
+) -> dict[str, object]:
+    deadline = time.monotonic() + 5
+    last_body: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        response = httpx.get(
+            f"http://127.0.0.1:{proxy_port}/tasks/{task_id}",
+            params={"tenant": tenant},
+            timeout=5,
+        )
+        response.raise_for_status()
+        last_body = response.json()
+        if last_body.get("state") == state:
+            return last_body
+        time.sleep(0.05)
+    raise AssertionError(f"Task {task_id} did not reach {state}: {last_body}")

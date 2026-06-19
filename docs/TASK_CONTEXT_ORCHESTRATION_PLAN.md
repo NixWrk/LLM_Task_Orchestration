@@ -282,6 +282,19 @@ Status:
 Move from "prepare capacity for external workers" to "orchestrator executes
 durable tasks."
 
+Status:
+
+1. Done: `TaskStore` supports tenant-scoped get/list/cancel, claim, result, and
+   error recording.
+2. Done: `GET /tasks`, `GET /tasks/{task_id}`, and `DELETE /tasks/{task_id}`
+   expose tenant-scoped task status.
+3. Done: optional in-process executor, enabled by `TASK_EXECUTOR_ENABLED`,
+   claims queued tasks with stored OpenAI-compatible payloads.
+4. Done: executor routes through backend resolver, records upstream results, and
+   releases registry leases.
+5. Next: add retries, fair multi-tenant scheduling, and artifact-driven payload
+   construction for HTML translation tasks.
+
 ### Tasks
 
 1. Add task worker loop in queue proxy or a dedicated service.

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from contextlib import suppress
 from time import perf_counter
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
+from orchestrator_core.openai import openai_url
 from orchestrator_core.logging import configure_json_logging
 
 from queue_proxy.backend_registry import BackendRegistryClient
@@ -34,6 +37,7 @@ from queue_proxy.responses import error_response
 from queue_proxy.routing import BackendResolver
 from queue_proxy.settings import Settings
 from queue_proxy.task_queue import (
+    StoredTask,
     TaskProtocolError,
     build_task_store,
     parse_task_queue_payload,
@@ -55,6 +59,23 @@ backend_resolver = BackendResolver(settings, backend_registry_client, logger)
 forwarder = UpstreamForwarder(settings.request_timeout_seconds, settings.upstream_api_key)
 task_store = build_task_store(settings.task_store_path)
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
+task_executor_task: asyncio.Task[None] | None = None
+
+
+@app.on_event("startup")
+async def start_task_executor() -> None:
+    global task_executor_task
+    if settings.task_executor_enabled:
+        task_executor_task = asyncio.create_task(task_executor_loop())
+
+
+@app.on_event("shutdown")
+async def stop_task_executor() -> None:
+    if task_executor_task is None:
+        return
+    task_executor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task_executor_task
 
 
 @app.get("/health")
@@ -132,6 +153,74 @@ async def submit_task_queue(request: Request) -> JSONResponse:
             "capacity": capacity,
         },
     )
+
+
+@app.get("/tasks")
+async def list_tasks(request: Request) -> JSONResponse:
+    if settings.queue_proxy_api_key:
+        auth_result = validate_proxy_auth(request)
+        if auth_result is not None:
+            return auth_result
+
+    tenant = tenant_from_request(request)
+    if tenant is None:
+        return missing_tenant_response()
+    raw_limit = request.query_params.get("limit", "100")
+    try:
+        limit = max(1, min(int(raw_limit), 500))
+    except ValueError:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "invalid_task_query",
+            "limit must be an integer.",
+        )
+    tasks = task_store.list_tasks(
+        tenant,
+        state=request.query_params.get("state"),
+        model=request.query_params.get("model"),
+        limit=limit,
+    )
+    return JSONResponse({"tasks": [task.to_summary() for task in tasks]})
+
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str, request: Request) -> JSONResponse:
+    if settings.queue_proxy_api_key:
+        auth_result = validate_proxy_auth(request)
+        if auth_result is not None:
+            return auth_result
+
+    tenant = tenant_from_request(request)
+    if tenant is None:
+        return missing_tenant_response()
+    task = task_store.get_task(tenant, task_id)
+    if task is None:
+        return error_response(
+            status.HTTP_404_NOT_FOUND,
+            "task_not_found",
+            "Task was not found for this tenant.",
+        )
+    return JSONResponse(task.to_detail())
+
+
+@app.delete("/tasks/{task_id}")
+async def cancel_task(task_id: str, request: Request) -> JSONResponse:
+    if settings.queue_proxy_api_key:
+        auth_result = validate_proxy_auth(request)
+        if auth_result is not None:
+            return auth_result
+
+    tenant = tenant_from_request(request)
+    if tenant is None:
+        return missing_tenant_response()
+    task = task_store.cancel_task(tenant, task_id)
+    if task is None:
+        return error_response(
+            status.HTTP_404_NOT_FOUND,
+            "task_not_found",
+            "Task was not found for this tenant.",
+        )
+    return JSONResponse(task.to_detail())
 
 
 @app.api_route(
@@ -337,6 +426,134 @@ async def reconcile_capacity(
         "state": "reconciled",
         "result": result,
     }
+
+
+async def task_executor_loop() -> None:
+    while True:
+        task = task_store.claim_next()
+        if task is None:
+            await asyncio.sleep(settings.task_executor_interval_seconds)
+            continue
+
+        try:
+            await execute_stored_task(task)
+        except Exception as exc:
+            logger.exception("task_execution_failed task_id=%s", task.task_id)
+            task_store.record_error(
+                task.task_id,
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+
+
+async def execute_stored_task(task: StoredTask) -> None:
+    if not task.payload:
+        task_store.record_error(
+            task.task_id,
+            {
+                "type": "missing_task_payload",
+                "message": "Durable task execution requires a stored OpenAI-compatible payload.",
+            },
+        )
+        return
+
+    try:
+        policy = policy_registry.resolve(task.model)
+    except PolicyError as exc:
+        task_store.record_error(
+            task.task_id,
+            {
+                "type": exc.error_type,
+                "message": exc.message,
+            },
+        )
+        return
+
+    upstream_base_url, backend_instance_id = await backend_resolver.resolve(
+        policy.public_name,
+        task.orchestration,
+    )
+    if upstream_base_url is None:
+        task_store.record_error(
+            task.task_id,
+            {
+                "type": "no_ready_backend",
+                "message": "No ready backend instance is available for this task.",
+            },
+        )
+        return
+
+    try:
+        clean_payload = strip_internal_fields({**task.payload})
+        clean_payload.setdefault("model", policy.public_name)
+        if backend_instance_id is not None:
+            clean_payload["model"] = policy.backend_model
+
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            response = await client.post(
+                openai_url(upstream_base_url, task.endpoint),
+                json=clean_payload,
+                headers=task_executor_headers(),
+            )
+    finally:
+        await backend_resolver.release(backend_instance_id)
+
+    body = response_body(response)
+    if response.status_code >= 400:
+        task_store.record_error(
+            task.task_id,
+            {
+                "type": "upstream_status",
+                "message": "Upstream LLM backend returned an error status.",
+                "status_code": response.status_code,
+                "body": body,
+                "backend_instance_id": backend_instance_id,
+            },
+        )
+        return
+
+    task_store.record_result(
+        task.task_id,
+        {
+            "status_code": response.status_code,
+            "body": body,
+            "backend_instance_id": backend_instance_id,
+        },
+    )
+
+
+def task_executor_headers() -> dict[str, str]:
+    headers = {"content-type": "application/json"}
+    if settings.upstream_api_key:
+        headers["authorization"] = f"Bearer {settings.upstream_api_key}"
+    return headers
+
+
+def response_body(response: httpx.Response) -> Any:
+    content_type = response.headers.get("content-type", "")
+    if "json" not in content_type.lower():
+        return response.text
+    try:
+        return response.json()
+    except json.JSONDecodeError:
+        return response.text
+
+
+def tenant_from_request(request: Request) -> str | None:
+    tenant = request.query_params.get("tenant") or request.headers.get("x-tenant-id")
+    if tenant is None or not tenant.strip():
+        return None
+    return tenant.strip()
+
+
+def missing_tenant_response() -> JSONResponse:
+    return error_response(
+        status.HTTP_400_BAD_REQUEST,
+        "missing_tenant",
+        "Task status requests require tenant query parameter or X-Tenant-ID header.",
+    )
 
 
 @app.exception_handler(PolicyError)
