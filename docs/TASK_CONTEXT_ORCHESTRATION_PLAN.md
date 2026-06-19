@@ -46,10 +46,10 @@ Implemented:
 
 Important gap:
 
-The orchestrator has a first working task-driven loop, but production operation
-still needs live LM Studio ownership reconciliation, reload hysteresis, stronger
-VRAM planning, broader operational metrics, operator CLI commands, real
-Postgres integration tests, and the first Zotero worker integration.
+The orchestrator has a working task-driven loop, but production operation still
+needs stronger VRAM planning, broader operational metrics, operator CLI
+commands, real Postgres integration tests, and the first Zotero worker
+integration.
 
 ## Confirmed Product Decisions
 
@@ -237,8 +237,12 @@ Status:
    shape before relying on registry metadata.
 6. Done: lifecycle can use `lms load --estimate-only` to override planned VRAM
    for the future backend shape.
-7. Next: persist live LM Studio reconciliation results and reserve memory used
-   by unowned LM Studio loads.
+7. Done: lifecycle persists live LM Studio reconciliation results in backend
+   registry metadata.
+8. Done: matching pre-existing LM Studio loads are represented as `external`
+   backend records and their estimated VRAM is treated as reserved capacity.
+9. Next: add takeover policy hooks only if an operator explicitly wants
+   lifecycle to assume ownership of external loads.
 
 ### Tasks
 
@@ -287,7 +291,11 @@ Status:
 3. Done: idle lifecycle-owned LM Studio backends reload through
    stop/start/warmup.
 4. Done: pre-existing/unowned LM Studio loads are not unloaded.
-5. Next: add reload hysteresis and live LM Studio ownership reconciliation.
+5. Done: reload hysteresis avoids churn for bucket-only and non-critical shape
+   changes.
+6. Done: live LM Studio ownership reconciliation distinguishes lifecycle-owned
+   loads from external loads before reload/cleanup.
+7. Next: add reload/reconciliation metrics and operator-facing explanations.
 
 ### Tasks
 
@@ -313,6 +321,10 @@ Status:
 2. New tasks wait or route elsewhere during reload.
 3. Failed reload leaves a clear error and does not corrupt task state.
 4. The system does not reload repeatedly while tasks are still arriving.
+5. Lifecycle does not reload only because the configured context bucket is
+   larger when the current live context can still fit queued tasks.
+6. Non-critical shape improvements, such as a larger parallel target, respect
+   `reload_min_dwell_seconds` before reload.
 
 ## Phase 6: Durable Task Executor
 

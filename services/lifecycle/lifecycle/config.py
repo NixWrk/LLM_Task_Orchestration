@@ -114,6 +114,18 @@ def model_profile_from_data(
             lifecycle_data.get("lms_ttl_seconds", model_data.get("lms_ttl_seconds"))
         ),
         preferred_gpus=preferred_gpus,
+        reload_min_dwell_seconds=int(
+            lifecycle_data.get(
+                "reload_min_dwell_seconds",
+                model_data.get("reload_min_dwell_seconds", 300),
+            )
+        ),
+        reload_allow_bucket_only=bool(
+            lifecycle_data.get(
+                "reload_allow_bucket_only",
+                model_data.get("reload_allow_bucket_only", False),
+            )
+        ),
     )
 
 

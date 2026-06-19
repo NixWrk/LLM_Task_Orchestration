@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
+import re
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -15,7 +18,7 @@ from lifecycle.config import (
     load_model_profiles,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
-from lifecycle.lmstudio import inspect_loaded_model
+from lifecycle.lmstudio import LmStudioLoad, inspect_loaded_model, loaded_models
 from lifecycle.models import (
     BackendInstance,
     ContextPlan,
@@ -23,6 +26,7 @@ from lifecycle.models import (
     ModelProfile,
     PlacementDecision,
     optional_int,
+    parse_iso,
 )
 from lifecycle.registry import BackendRegistry
 from lifecycle.runtime import RuntimeLifecycleService
@@ -210,6 +214,7 @@ class LifecycleController:
         queue_lengths = queue_lengths or {}
         context_plans = context_plans or {}
         profiles = self.profiles()
+        live_reconciled = self.sync_live_lmstudio_state(profiles)
         stopped = await self.stop_idle_instances(profiles, queue_lengths)
         plan = await self.plan(queue_lengths, context_plans)
         created: list[dict[str, Any]] = []
@@ -236,7 +241,57 @@ class LifecycleController:
         plan["created_instances"] = created
         plan["reloaded_instances"] = reloaded
         plan["stopped_instances"] = stopped
+        plan["live_lmstudio_reconciled_instances"] = live_reconciled
         return plan
+
+    def sync_live_lmstudio_state(
+        self,
+        profiles: dict[str, ModelProfile],
+    ) -> list[dict[str, Any]]:
+        loads_by_binary: dict[str, list[LmStudioLoad]] = {}
+        synced: list[dict[str, Any]] = []
+
+        for profile in profiles.values():
+            if profile.runtime != "lmstudio":
+                continue
+            loads = loads_by_binary.setdefault(
+                profile.lms_binary,
+                loaded_models(profile.lms_binary),
+            )
+            synced.extend(self.sync_profile_live_lmstudio_load(profile, loads))
+
+        return synced
+
+    def sync_profile_live_lmstudio_load(
+        self,
+        profile: ModelProfile,
+        loads: list[LmStudioLoad],
+    ) -> list[dict[str, Any]]:
+        synced: list[dict[str, Any]] = []
+        matched_loads: set[str] = set()
+        profile_loads = [
+            load for load in loads if lmstudio_load_matches_profile(load, profile)
+        ]
+
+        for instance in list(self.registry.list()):
+            if instance.runtime != "lmstudio" or instance.model != profile.public_name:
+                continue
+            load = matching_lmstudio_load(instance, profile_loads)
+            if load is None:
+                if instance.state == "external":
+                    self.registry.remove(instance.instance_id)
+                continue
+            matched_loads.add(load.identifier)
+            updated = instance_with_lmstudio_load(profile, instance, load)
+            synced.append(self.registry.upsert(updated).to_dict())
+
+        for load in profile_loads:
+            if load.identifier in matched_loads:
+                continue
+            external = external_lmstudio_instance(profile, load)
+            synced.append(self.registry.upsert(external).to_dict())
+
+        return synced
 
     async def allocate(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.allocation_service.allocate(
@@ -394,15 +449,28 @@ def reload_decision_for_context_plan(
     for instance in active_instances:
         if instance.state not in {"ready", "draining"}:
             continue
-        if backend_satisfies_profile_shape(instance, profile):
+        assessment = assess_reload_need(instance, profile, context_plan)
+        if not assessment.reload_needed:
+            if assessment.noop_reason:
+                return noop_shape_decision(profile, instance, context_plan, assessment)
             continue
+        if not assessment.hard_context_mismatch and not reload_dwell_satisfied(profile, instance):
+            return noop_shape_decision(
+                profile,
+                instance,
+                context_plan,
+                replace(
+                    assessment,
+                    noop_reason="reload_hysteresis_min_dwell",
+                ),
+            )
         current_context = lms_context_length_from_instance(instance)
         current_parallel = lms_parallel_from_instance(instance)
         return PlacementDecision(
             model=profile.public_name,
             action="reload",
             gpu_id=instance.gpu_ids[0] if instance.gpu_ids else None,
-            reason="backend_shape_mismatch",
+            reason=assessment.reload_reason or "backend_shape_mismatch",
             required_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
             instance_id=instance.instance_id,
             lms_context_length=profile.lms_context_length,
@@ -413,6 +481,97 @@ def reload_decision_for_context_plan(
         )
 
     return None
+
+
+@dataclass(frozen=True)
+class ReloadAssessment:
+    reload_needed: bool
+    hard_context_mismatch: bool = False
+    reload_reason: str | None = None
+    noop_reason: str | None = None
+
+
+def assess_reload_need(
+    instance: BackendInstance,
+    profile: ModelProfile,
+    context_plan: ContextPlan,
+) -> ReloadAssessment:
+    current_context = lms_context_length_from_instance(instance)
+    current_parallel = lms_parallel_from_instance(instance)
+    required_context = context_plan.max_required_context_tokens
+    desired_context = profile.lms_context_length
+    desired_parallel = profile.lms_parallel
+
+    if desired_context and current_context is None:
+        return ReloadAssessment(
+            reload_needed=True,
+            hard_context_mismatch=True,
+            reload_reason="backend_context_unknown",
+        )
+    if desired_parallel and current_parallel is None:
+        return ReloadAssessment(
+            reload_needed=True,
+            reload_reason="backend_parallel_unknown",
+        )
+    if current_context is not None and required_context > 0 and current_context < required_context:
+        return ReloadAssessment(
+            reload_needed=True,
+            hard_context_mismatch=True,
+            reload_reason="backend_context_too_small_for_task",
+        )
+    if (
+        desired_context
+        and current_context is not None
+        and current_context < desired_context
+        and not profile.reload_allow_bucket_only
+    ):
+        return ReloadAssessment(
+            reload_needed=False,
+            noop_reason="current_context_satisfies_required_tokens",
+        )
+    if desired_context and current_context is not None and current_context < desired_context:
+        return ReloadAssessment(
+            reload_needed=True,
+            reload_reason="backend_context_below_desired_bucket",
+        )
+    if desired_parallel and current_parallel is not None and current_parallel < desired_parallel:
+        return ReloadAssessment(
+            reload_needed=True,
+            reload_reason="backend_parallel_too_small",
+        )
+    return ReloadAssessment(reload_needed=False)
+
+
+def noop_shape_decision(
+    profile: ModelProfile,
+    instance: BackendInstance,
+    context_plan: ContextPlan,
+    assessment: ReloadAssessment,
+) -> PlacementDecision:
+    return PlacementDecision(
+        model=profile.public_name,
+        action="noop",
+        gpu_id=instance.gpu_ids[0] if instance.gpu_ids else None,
+        reason=assessment.noop_reason or "desired_replicas_satisfied",
+        required_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
+        instance_id=instance.instance_id,
+        lms_context_length=profile.lms_context_length,
+        lms_parallel=profile.lms_parallel,
+        current_lms_context_length=lms_context_length_from_instance(instance),
+        current_lms_parallel=lms_parallel_from_instance(instance),
+        context_plan=context_plan.to_dict(),
+    )
+
+
+def reload_dwell_satisfied(profile: ModelProfile, instance: BackendInstance) -> bool:
+    if profile.reload_min_dwell_seconds <= 0:
+        return True
+    try:
+        created_at = parse_iso(instance.created_at).astimezone(UTC)
+    except Exception:
+        return True
+    age_seconds = (datetime.now(UTC) - created_at).total_seconds()
+    return age_seconds >= profile.reload_min_dwell_seconds
 
 
 def backend_satisfies_profile_shape(
@@ -468,10 +627,22 @@ def instance_with_live_lmstudio_shape(
     if loaded is None:
         return instance
 
+    return instance_with_lmstudio_load(profile, instance, loaded)
+
+
+def instance_with_lmstudio_load(
+    profile: ModelProfile,
+    instance: BackendInstance,
+    loaded: LmStudioLoad,
+) -> BackendInstance:
     copy = BackendInstance.from_dict(instance.to_dict())
     copy.metadata = dict(copy.metadata)
     copy.metadata["live_lmstudio_load"] = loaded.to_dict()
+    copy.metadata["live_lmstudio_reconciled_at"] = datetime.now(UTC).isoformat()
     copy.metadata["lmstudio_identifier"] = loaded.identifier
+    copy.metadata["lmstudio_ownership"] = (
+        "owned" if copy.metadata.get("lmstudio_loaded_with_lms") else "external"
+    )
     if loaded.context_length is not None:
         copy.metadata["lms_context_length"] = loaded.context_length
     if loaded.parallel is not None:
@@ -481,3 +652,70 @@ def instance_with_live_lmstudio_shape(
     if loaded.ttl_seconds is not None:
         copy.metadata["lms_ttl_seconds"] = loaded.ttl_seconds
     return copy
+
+
+def lmstudio_load_matches_profile(load: LmStudioLoad, profile: ModelProfile) -> bool:
+    candidates = {load.identifier, load.model_key}
+    raw = load.raw
+    for key in ("model", "modelKey", "selectedVariant", "indexedModelIdentifier"):
+        if raw.get(key) is not None:
+            candidates.add(str(raw[key]))
+    return profile.backend_model in candidates or profile.public_name in candidates
+
+
+def matching_lmstudio_load(
+    instance: BackendInstance,
+    loads: list[LmStudioLoad],
+) -> LmStudioLoad | None:
+    preferred_identifier = str(instance.metadata.get("lmstudio_identifier") or "")
+    candidates = {instance.backend_model, instance.model}
+    if preferred_identifier:
+        candidates.add(preferred_identifier)
+    for load in loads:
+        if load.identifier in candidates or load.model_key in candidates:
+            return load
+    return None
+
+
+def external_lmstudio_instance(
+    profile: ModelProfile,
+    load: LmStudioLoad,
+) -> BackendInstance:
+    instance = BackendInstance(
+        instance_id=f"external-lmstudio-{stable_id(load.identifier)}",
+        model=profile.public_name,
+        backend_model=profile.backend_model,
+        runtime="lmstudio",
+        base_url=profile.base_url or "",
+        gpu_ids=gpu_ids_from_lmstudio_load(load, profile),
+        state="external",
+        reserved_vram_mb=profile.estimated_vram_mb + profile.safety_margin_mb,
+        dry_run=False,
+        metadata={
+            "lmstudio_identifier": load.identifier,
+            "lmstudio_ownership": "external",
+            "lmstudio_loaded_with_lms": False,
+            "lms_binary": profile.lms_binary,
+        },
+    )
+    return instance_with_lmstudio_load(profile, instance, load)
+
+
+def gpu_ids_from_lmstudio_load(load: LmStudioLoad, profile: ModelProfile) -> list[str]:
+    raw_gpu = (load.gpu or "").strip().lower()
+    if raw_gpu.startswith("gpu"):
+        return [raw_gpu]
+    if raw_gpu.isdigit():
+        return [f"gpu{raw_gpu}"]
+    explicit = [
+        gpu_id
+        for gpu_id in profile.preferred_gpus
+        if gpu_id not in {"auto", "max"} and gpu_id.startswith("gpu")
+    ]
+    return list(explicit[:1])
+
+
+def stable_id(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-").lower()
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:10]
+    return f"{cleaned[:48] or 'load'}-{digest}"

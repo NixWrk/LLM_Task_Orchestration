@@ -111,6 +111,12 @@ lifecycle:
 
 Lifecycle then runs `lms load <backend_model> --identifier <backend_model> --yes` before healthcheck/warmup and `lms unload <backend_model>` during idle stop, but only for models it actually loaded. If the identifier already exists, lifecycle treats it as pre-existing and leaves unloading to LM Studio/user TTL.
 
+On each reconcile, lifecycle can also inspect `lms ps --json`. Live shape fields
+such as context, parallel, GPU, and TTL are written back to registry metadata.
+Matching LM Studio loads that were not started by lifecycle are marked
+`external`, counted as reserved capacity, and left alone during cleanup and
+reload.
+
 On Windows with Docker Compose, the lifecycle container normally cannot execute the host `lms.exe`. Use `cli-if-available` for Docker safety, or run lifecycle directly on the host when you want real CLI control.
 
 ## Verify GPU Loading

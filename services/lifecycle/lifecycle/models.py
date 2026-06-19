@@ -12,6 +12,7 @@ BackendState = Literal[
     "stopping",
     "stopped",
     "failed",
+    "external",
 ]
 
 ScaleActionType = Literal["start", "stop", "reload", "reject_oversized", "noop"]
@@ -113,6 +114,8 @@ class ModelProfile:
     lms_parallel: int | None = None
     lms_ttl_seconds: int | None = None
     preferred_gpus: tuple[str, ...] = ("auto",)
+    reload_min_dwell_seconds: int = 300
+    reload_allow_bucket_only: bool = False
 
 
 @dataclass

@@ -185,6 +185,17 @@ lms unload <model-key>
 
 `cli-if-available` is the default for dynamic LM Studio profiles. It lets a Docker lifecycle container continue when Windows host `lms.exe` is not available inside the container, while local host runs can use real `lms load/unload`. If `lms load` reports that the identifier already exists, lifecycle treats that as a pre-existing LM Studio load and will not unload it during idle cleanup.
 
+During reconcile, lifecycle also reads live `lms ps --json` state when the CLI is
+available. Matching loads it did not create are recorded as `external` registry
+records and counted as reserved GPU capacity. They are not selected as ready
+backends and are not unloaded by cleanup/reload policy.
+
+Reload decisions compare the queue context plan with the live LM Studio shape.
+A load is reloaded immediately when its current context cannot fit a queued
+task. Bucket-only increases are skipped when the current context is sufficient,
+and non-critical shape improvements respect the model profile's
+`reload_min_dwell_seconds` before reload.
+
 `registry_cleanup_ttl_seconds` removes old `stopped` or `failed` LM Studio allocation records from the registry after the TTL. Idle ready instances are stopped first by `idle_ttl_seconds`; cleanup then purges stale records.
 
 Queue proxy should route through lifecycle:

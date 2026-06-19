@@ -562,6 +562,12 @@ Reload should not happen for every small queue change. Use context buckets,
 minimum dwell time, and hysteresis so the system does not unload/reload the same
 model repeatedly while a batch is arriving.
 
+If the live LM Studio context can satisfy the largest currently queued task,
+lifecycle may keep the existing load even when the configured target bucket is
+larger. Non-critical improvements, such as increasing parallel slots, should
+wait for the configured minimum dwell time before reload. Hard mismatches, such
+as a live context that is too small for a queued task, remain reload candidates.
+
 VRAM planning should use both current live state and future estimates such as
 `lms load --estimate-only`. The scheduler should account for model size, planned
 context, planned parallel slots, active owned loads, and unowned external loads.
@@ -919,6 +925,10 @@ Implemented now:
     per-task `template_vars` into stored OpenAI-compatible payloads.
 24. `llmoctl tasks`, `llmoctl task <id>`, and `llmoctl cancel-task <id>` expose
     tenant-scoped durable task inspection and cancellation from the operator CLI.
+25. Lifecycle persists live LM Studio reconciliation metadata, represents
+    matching unowned LM Studio loads as `external` registry records, reserves
+    their estimated VRAM, and applies reload hysteresis before non-critical
+    shape changes.
 
 Needed next:
 
@@ -927,11 +937,9 @@ Needed next:
 3. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
    placement, and backend ownership.
 4. Formal Postgres migration tooling and real-container integration tests.
-5. Reload hysteresis, persisted live LM Studio reconciliation, and explicit
-   reserved-capacity accounting for unowned loads.
-6. Task execution logs and operator-facing status explanations.
-7. Zotero HTML queue submission with employer-provided payloads/prompts and
+5. Task execution logs and operator-facing status explanations.
+6. Zotero HTML queue submission with employer-provided payloads/prompts and
    artifact references.
-8. Allocation ids and task ownership in lifecycle.
-9. External GPU reservation API for non-LLM consumers such as OCR.
-10. More Python client helpers that build the canonical envelope.
+7. Allocation ids and task ownership in lifecycle.
+8. External GPU reservation API for non-LLM consumers such as OCR.
+9. More Python client helpers that build the canonical envelope.

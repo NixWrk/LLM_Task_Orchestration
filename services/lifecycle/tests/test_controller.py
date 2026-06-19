@@ -202,7 +202,7 @@ def test_plan_returns_reload_when_lmstudio_shape_is_too_small(
     decision = result["models"][0]["decisions"][0]
     assert decision["action"] == "reload"
     assert decision["instance_id"] == "lmstudio-1"
-    assert decision["reason"] == "backend_shape_mismatch"
+    assert decision["reason"] == "backend_context_too_small_for_task"
     assert decision["current_lms_context_length"] == 8192
     assert decision["current_lms_parallel"] == 1
     assert decision["lms_context_length"] == 16384
@@ -335,6 +335,130 @@ def test_plan_uses_lmstudio_estimate_for_future_vram_shape(
     decision = result["models"][0]["decisions"][0]
     assert shape["estimated_vram_mb"] == 26_072
     assert decision["required_vram_mb"] == 26_072 + 1024
+
+
+def test_plan_skips_bucket_only_reload_when_current_context_fits_tasks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 12000, "lms_parallel": 2},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "noop"
+    assert decision["reason"] == "current_context_satisfies_required_tokens"
+    assert decision["current_lms_context_length"] == 12000
+
+
+def test_plan_delays_parallel_only_reload_until_min_dwell(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 32768, "lms_parallel": 1},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "noop"
+    assert decision["reason"] == "reload_hysteresis_min_dwell"
+    assert decision["current_lms_parallel"] == 1
+
+
+def test_plan_reloads_parallel_only_shape_after_min_dwell(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    old = datetime.now(UTC) - timedelta(seconds=600)
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            created_at=old.isoformat(),
+            metadata={"lms_context_length": 32768, "lms_parallel": 1},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "reload"
+    assert decision["reason"] == "backend_parallel_too_small"
 
 
 def test_reconcile_marks_active_lmstudio_reload_draining(
@@ -478,6 +602,85 @@ def test_reconcile_skips_reload_for_unowned_lmstudio_backend(
     assert reloaded["state"] == "skipped"
     assert reloaded["reason"] == "lmstudio_load_not_owned"
     assert registry.get("lmstudio-1").state == "ready"
+
+
+def test_reconcile_persists_live_lmstudio_shape_in_registry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 8192, "lms_parallel": 1},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    load = LmStudioLoad(
+        identifier="local-main",
+        model_key="local-main",
+        status="loaded",
+        context_length=32768,
+        parallel=2,
+        gpu="gpu0",
+        ttl_seconds=3600,
+        raw={},
+    )
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+    monkeypatch.setattr("lifecycle.controller.loaded_models", lambda _binary: [load])
+    monkeypatch.setattr("lifecycle.controller.inspect_loaded_model", lambda *_args: load)
+
+    result = asyncio.run(controller.reconcile({"local-main": 0}, {}))
+
+    stored = registry.get("lmstudio-1")
+    assert result["live_lmstudio_reconciled_instances"][0]["instance_id"] == "lmstudio-1"
+    assert stored.metadata["live_lmstudio_load"]["identifier"] == "local-main"
+    assert stored.metadata["lms_context_length"] == 32768
+    assert stored.metadata["lms_parallel"] == 2
+    assert stored.metadata["lmstudio_ownership"] == "external"
+
+
+def test_reconcile_records_external_lmstudio_load_as_reserved_capacity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    load = LmStudioLoad(
+        identifier="local-main",
+        model_key="local-main",
+        status="loaded",
+        context_length=32768,
+        parallel=2,
+        gpu="gpu0",
+        ttl_seconds=3600,
+        raw={},
+    )
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+    monkeypatch.setattr("lifecycle.controller.loaded_models", lambda _binary: [load])
+    monkeypatch.setattr("lifecycle.controller.inspect_loaded_model", lambda *_args: load)
+
+    result = asyncio.run(controller.reconcile({"local-main": 0}, {}))
+
+    external = result["live_lmstudio_reconciled_instances"][0]
+    assert external["state"] == "external"
+    assert external["metadata"]["lmstudio_ownership"] == "external"
+    assert registry.reserved_vram_by_gpu()["gpu0"] == 9 * 1024
 
 
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:

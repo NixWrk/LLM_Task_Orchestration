@@ -6,6 +6,7 @@ from lifecycle.models import BackendInstance, now_iso
 from lifecycle.registry_store import JsonFileRegistryStore, RegistryStore
 
 ACTIVE_STATES = {"starting", "warming", "ready", "draining", "stopping"}
+RESERVED_STATES = ACTIVE_STATES | {"external"}
 READY_STATES = {"ready"}
 
 
@@ -60,7 +61,7 @@ class BackendRegistry:
     def reserved_vram_by_gpu(self) -> dict[str, int]:
         reserved: dict[str, int] = {}
         for instance in self._instances.values():
-            if instance.state not in ACTIVE_STATES:
+            if instance.state not in RESERVED_STATES:
                 continue
             for gpu_id in instance.gpu_ids:
                 reserved[gpu_id] = reserved.get(gpu_id, 0) + instance.reserved_vram_mb
@@ -77,10 +78,11 @@ class BackendRegistry:
             offset += 1
         return host_port_start + offset
 
-    def upsert(self, instance: BackendInstance) -> None:
+    def upsert(self, instance: BackendInstance) -> BackendInstance:
         instance.updated_at = now_iso()
         self._instances[instance.instance_id] = instance
         self.save()
+        return instance
 
     def mark_state(self, instance_id: str, state: str) -> BackendInstance:
         instance = self._instances[instance_id]

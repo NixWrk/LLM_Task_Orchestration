@@ -143,7 +143,7 @@ async def metrics() -> Response:
     lines = [
         f'llm_backend_instances{{state="{state}",runtime="{runtime}"}} '
         f'{sum(1 for instance in instances if instance.state == state and instance.runtime == runtime)}'
-        for state in ("starting", "warming", "ready", "draining", "failed", "stopped")
+        for state in ("starting", "warming", "ready", "draining", "failed", "stopped", "external")
         for runtime in sorted({instance.runtime for instance in instances} or {"none"})
     ]
     for instance in instances:
