@@ -46,8 +46,33 @@ Implemented:
 
 Important gap:
 
-Lifecycle currently does not yet make placement/reload decisions from
-`context_plans`, and tasks are not yet executed by the orchestrator.
+The orchestrator has a first working task-driven loop, but production operation
+still needs Postgres storage, retry policy, equal-priority fairness, live LM
+Studio ownership reconciliation, reload hysteresis, stronger VRAM planning,
+metrics, and operator CLI commands.
+
+## Confirmed Product Decisions
+
+1. Postgres is the target durable storage backend. JSON remains a local
+   development and smoke-test backend.
+2. Employers submit the actual work definition. If a prompt is needed, the
+   employer must provide it as an OpenAI-compatible `payload` or explicit task
+   template. The orchestrator must not invent task prompts.
+3. Once a task is accepted, the orchestrator owns execution: backend selection,
+   retry decisions, capacity reconciliation, lease handling, and final status.
+4. For now all employers have equal scheduling priority. The `priority` field
+   stays in the protocol for future policy, but current fairness should not let
+   one tenant monopolize the queue.
+5. Lifecycle must reconcile registry state with live LM Studio state.
+6. Reload hysteresis is required before production use, so small context/slot
+   changes do not unload and reload models repeatedly.
+7. VRAM planning must compare current load, planned future load, and ownership:
+   lifecycle may unload/reload only loads it owns, and must treat pre-existing
+   external LM Studio loads as reserved capacity unless policy explicitly takes
+   ownership.
+8. Observability must explain waiting tasks, reload decisions, planned vs actual
+   context/VRAM, and tenant/project/service usage.
+9. Operator CLI commands are required for day-to-day inspection and control.
 
 ## Design Principles
 
@@ -74,7 +99,7 @@ Status:
 2. Done: `JsonFileTaskStore` selected by `TASK_STORE_PATH` for durable local
    queue state and restart-safe idempotency.
 3. Done: in-memory store remains the default dev/test fallback.
-4. Next: expand the interface with fetch/list/update/claim/result operations.
+4. Done: interface supports fetch/list/cancel/claim/result/error operations.
 5. Next: add Postgres implementation and migrations for multi-worker
    production execution.
 
@@ -206,6 +231,8 @@ Status:
 4. Done: dry-run lifecycle no longer calls real LM Studio load/unload commands.
 5. Next: reconcile registry metadata with live `lms ps --json` state on startup
    and before reload decisions.
+6. Next: compare current and planned VRAM with `lms load --estimate-only`, while
+   reserving memory used by unowned LM Studio loads.
 
 ### Tasks
 
@@ -230,6 +257,9 @@ Status:
    - `unload(identifier)`;
    - `can_reload(instance, plan)`.
 5. Store current LM Studio shape in backend registry metadata.
+6. Distinguish lifecycle-owned loads from pre-existing user/external loads.
+7. Treat unowned loads as unavailable/reserved capacity unless takeover policy
+   is explicitly enabled.
 
 ### Acceptance Criteria
 
@@ -269,6 +299,7 @@ Status:
    - context bucket thresholds;
    - do not shrink context during active batch unless idle;
    - avoid reload if benefit is below threshold.
+9. Compare planned shape against current live LM Studio state before reload.
 
 ### Acceptance Criteria
 
@@ -292,8 +323,8 @@ Status:
    claims queued tasks with stored OpenAI-compatible payloads.
 4. Done: executor routes through backend resolver, records upstream results, and
    releases registry leases.
-5. Next: add retries, fair multi-tenant scheduling, and artifact-driven payload
-   construction for HTML translation tasks.
+5. Next: add orchestrator-owned retries, equal-priority multi-tenant fairness,
+   and employer-provided payload/template execution for HTML translation tasks.
 
 ### Tasks
 
@@ -316,6 +347,8 @@ Status:
    - retry transient upstream failures;
    - do not retry validation/token errors;
    - respect idempotency.
+8. Keep retry decisions inside the orchestrator. Employers submit work once and
+   poll durable task status.
 
 ### Acceptance Criteria
 
@@ -338,6 +371,7 @@ Make the first real client use the protocol.
    - `project: zotero`;
    - `service: zotero-html-translate-worker`;
    - `task: html_translate`;
+   - OpenAI-compatible payload or explicit prompt/template for each task;
    - artifact refs for `02.en.polish.html` and `03.ru.translate.html`;
    - per-task token estimates from HTML visible text.
 3. Add a poller for durable task status once Phase 6 exists.
@@ -346,8 +380,11 @@ Make the first real client use the protocol.
 ### Acceptance Criteria
 
 1. Worker can submit a batch without knowing GPU ids or LM Studio state.
-2. Orchestrator chooses context/parallel from the submitted HTML sizes.
+2. Orchestrator chooses context/parallel from submitted token estimates and
+   server-side policy.
 3. Worker receives task ids and status.
+4. Orchestrator does not generate the translation prompt unless the employer
+   supplied it as task data.
 
 ## Phase 8: Observability And Operations
 

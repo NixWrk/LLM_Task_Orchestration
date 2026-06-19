@@ -25,6 +25,12 @@ Clients must not:
 4. Infer available generation parallelism from their own worker count.
 5. Treat GPU hints as hard reservations unless the orchestrator confirms them.
 
+Clients, also called employers in the scheduling model, own the task prompt and
+payload. If a task needs a prompt, the employer must submit it as an
+OpenAI-compatible `payload` or an explicit task template. The orchestrator
+executes accepted work and manages resources; it must not invent prompts for
+employer-specific tasks.
+
 ## Entry Points
 
 ### Synchronous Inference
@@ -382,6 +388,10 @@ Use one of:
 Priority is a scheduling hint. Server-side policy decides the actual queue
 order, maximum concurrency, and whether a request is admitted.
 
+Current policy treats all employers as equal priority. The priority field stays
+in the protocol so future policy can distinguish interactive, foreground, batch,
+and maintenance classes without changing the task envelope.
+
 ## Orchestration Fields
 
 ### Identity
@@ -498,6 +508,12 @@ still loaded once; parallel slots let multiple requests share that load. More
 slots do not mean `model_vram * slots`, but larger context and active generations
 can increase KV/runtime memory and reduce tokens per second.
 
+Lifecycle must compare the current live LM Studio state with the planned future
+shape. It must distinguish lifecycle-owned loads from pre-existing external
+loads. Owned loads may be drained and reloaded by policy; unowned loads are
+treated as reserved external capacity unless an explicit takeover policy is
+enabled.
+
 ### Graceful Reload
 
 If the current LM Studio load does not match the queue's context plan, lifecycle
@@ -514,6 +530,10 @@ should use a graceful reload policy:
 Reload should not happen for every small queue change. Use context buckets,
 minimum dwell time, and hysteresis so the system does not unload/reload the same
 model repeatedly while a batch is arriving.
+
+VRAM planning should use both current live state and future estimates such as
+`lms load --estimate-only`. The scheduler should account for model size, planned
+context, planned parallel slots, active owned loads, and unowned external loads.
 
 ### Policy Wins
 
@@ -680,6 +700,11 @@ queued/running -> expired
 6. stable error object if failed;
 7. retry/idempotency metadata.
 
+Durable task execution is orchestrator-owned after admission. Employers submit a
+task once, receive task ids, and poll status. The orchestrator decides whether a
+failure is retryable, when to retry, and when to mark the task permanently
+failed.
+
 ## Client Rules
 
 Every client project should:
@@ -696,6 +721,9 @@ Every client project should:
 9. Handle `429`, `503`, and `413` as normal scheduling/policy outcomes.
 10. Export its own job metrics with the same `tenant`, `project`, `service`, and
    `task` names used in `orchestration`.
+11. Provide the prompt/payload or explicit prompt template needed to execute its
+   task. Do not rely on the orchestrator to infer domain-specific prompts from
+   artifact names.
 
 ## Server Rules
 
@@ -712,6 +740,10 @@ The orchestrator should:
    `service`, `task`, `priority`, and `gpu`.
 8. Record enough status to explain why a request was queued, rejected, placed,
    or failed.
+9. Execute accepted durable tasks according to server-side retry and scheduling
+   policy.
+10. Use employer-provided payloads/templates for task execution instead of
+   inventing prompts.
 
 ## Durable Storage
 
@@ -793,10 +825,12 @@ Needed next:
 1. Schema validation for `llmo.task.v1`.
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
-4. Tenant-scoped list/status APIs and production Postgres task store.
+4. Production Postgres task store.
 5. Reload hysteresis and live LM Studio ownership reconciliation.
-6. Retry policy, fair multi-tenant task claiming, and task execution metrics.
-7. Zotero HTML artifact-to-payload execution mode.
+6. Retry policy, equal-priority multi-tenant task claiming, and task execution
+   metrics.
+7. Zotero HTML queue submission with employer-provided payloads/prompts and
+   artifact references.
 8. Allocation ids and task ownership in lifecycle.
 9. External GPU reservation API for non-LLM consumers such as OCR.
 10. Python client helpers that build the canonical envelope.
