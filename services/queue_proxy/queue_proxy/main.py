@@ -25,7 +25,12 @@ from queue_proxy.metrics import (
     OUTPUT_TOKEN_BUDGET,
     REQUESTS,
     generate_latest,
+    observe_task_execution,
+    observe_task_queue_wait,
     record_snapshot,
+    record_task_counts,
+    record_task_error,
+    record_task_event,
 )
 from queue_proxy.policy import (
     PolicyError,
@@ -111,6 +116,7 @@ async def proxy_status() -> dict[str, Any]:
 
 @app.get("/metrics")
 async def metrics() -> Response:
+    record_task_counts(task_store.task_counts_by_state())
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -140,6 +146,10 @@ async def submit_task_queue(request: Request) -> JSONResponse:
         )
 
     accepted, reused = task_store.submit_many(tasks)
+    for task in accepted:
+        record_task_event(task, "accepted")
+    for task in reused:
+        record_task_event(task, "reused")
     queue_lengths = task_store.queue_lengths_by_model()
     context_plans = task_store.context_plans_by_model()
     capacity = await reconcile_capacity(queue_lengths, context_plans)
@@ -225,6 +235,8 @@ async def cancel_task(task_id: str, request: Request) -> JSONResponse:
             "task_not_found",
             "Task was not found for this tenant.",
         )
+    if task.state == "cancelled":
+        record_task_event(task, "cancelled")
     return JSONResponse(task.to_detail())
 
 
@@ -440,6 +452,8 @@ async def task_executor_loop() -> None:
             await asyncio.sleep(settings.task_executor_interval_seconds)
             continue
 
+        record_task_event(task, "claimed")
+        observe_task_queue_wait(task, seconds_between(task.created_at, task.started_at))
         try:
             await execute_stored_task(task)
         except Exception as exc:
@@ -536,13 +550,19 @@ async def execute_stored_task(task: StoredTask) -> None:
         )
         return
 
-    task_store.record_result(
+    completed = task_store.record_result(
         task.task_id,
         {
             "status_code": response.status_code,
             "body": body,
             "backend_instance_id": backend_instance_id,
         },
+    )
+    record_task_event(completed, "succeeded")
+    observe_task_execution(
+        completed,
+        "succeeded",
+        seconds_between(completed.started_at, completed.finished_at),
     )
 
 
@@ -563,9 +583,20 @@ def record_task_failure(
         next_attempt_at = (datetime.now(UTC) + timedelta(seconds=delay_seconds)).isoformat()
         enriched_error["next_attempt_at"] = next_attempt_at
         enriched_error["retry_delay_seconds"] = delay_seconds
-        return task_store.record_retry(task.task_id, enriched_error, next_attempt_at)
+        retry = task_store.record_retry(task.task_id, enriched_error, next_attempt_at)
+        record_task_event(retry, "retry")
+        record_task_error(retry, enriched_error)
+        return retry
 
-    return task_store.record_error(task.task_id, enriched_error)
+    failed = task_store.record_error(task.task_id, enriched_error)
+    record_task_event(failed, "failed")
+    record_task_error(failed, enriched_error)
+    observe_task_execution(
+        failed,
+        "failed",
+        seconds_between(failed.started_at, failed.finished_at),
+    )
+    return failed
 
 
 def retry_delay_seconds(attempt_count: int) -> float:
@@ -576,6 +607,14 @@ def retry_delay_seconds(attempt_count: int) -> float:
 
 def is_retryable_upstream_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
+def seconds_between(start: str | None, end: str | None) -> float:
+    if start is None or end is None:
+        return 0.0
+    start_time = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    end_time = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    return (end_time - start_time).total_seconds()
 
 
 def task_executor_headers() -> dict[str, str]:

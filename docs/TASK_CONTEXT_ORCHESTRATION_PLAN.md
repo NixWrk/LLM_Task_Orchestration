@@ -48,8 +48,8 @@ Important gap:
 
 The orchestrator has a first working task-driven loop, but production operation
 still needs live LM Studio ownership reconciliation, reload hysteresis, stronger
-VRAM planning, metrics, operator CLI commands, real Postgres integration tests,
-and the first Zotero worker integration.
+VRAM planning, broader operational metrics, operator CLI commands, real
+Postgres integration tests, and the first Zotero worker integration.
 
 ## Confirmed Product Decisions
 
@@ -335,8 +335,10 @@ Status:
 7. Done: task claiming uses equal-priority fairness across
    `(tenant, project, service, task, priority, model)` groups, so one employer
    group cannot drain its whole batch before another due group gets a turn.
-8. Next: add task execution metrics and employer-provided payload/template
-   integration for HTML translation tasks.
+8. Done: first task execution metrics for events, errors, queue wait,
+   execution duration, and current task state counts.
+9. Next: add employer-provided payload/template integration for HTML
+   translation tasks.
 
 ### Tasks
 
@@ -405,6 +407,17 @@ Make the first real client use the protocol.
 ## Phase 8: Observability And Operations
 
 Make the system explain itself.
+
+Status:
+
+1. Done: durable task metrics are exported:
+   - task lifecycle events by tenant/project/service/task/model;
+   - task errors by stable error type and retryability;
+   - current tasks by state;
+   - queue wait duration;
+   - execution duration.
+2. Next: add lifecycle/reload/GPU metrics, richer structured logs, dashboards,
+   and operator CLI commands.
 
 ### Tasks
 

@@ -124,6 +124,36 @@ class PostgresTaskStore(TaskStore):
             for model, tasks in sorted(tasks_by_model.items())
         }
 
+    def task_counts_by_state(self) -> dict[tuple[str, str, str, str, str, str], int]:
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        tenant,
+                        project,
+                        service,
+                        task,
+                        model,
+                        state,
+                        COUNT(*) AS count
+                    FROM llmo_tasks
+                    GROUP BY tenant, project, service, task, model, state
+                    """
+                )
+                rows = cur.fetchall()
+        return {
+            (
+                str(row["tenant"]),
+                str(row["project"]),
+                str(row["service"]),
+                str(row["task"]),
+                str(row["model"]),
+                str(row["state"]),
+            ): int(row["count"])
+            for row in rows
+        }
+
     def get_task(self, tenant: str, task_id: str) -> StoredTask | None:
         with self.connection() as conn:
             with conn.cursor() as cur:

@@ -867,16 +867,19 @@ Implemented now:
    permanent failure for invalid/non-executable tasks.
 20. Equal-priority task claiming across
    `(tenant, project, service, task, priority, model)` employer groups.
+21. Durable task metrics on `/metrics` for lifecycle events, task errors,
+    current task states, queue wait time, and execution duration.
 
 Needed next:
 
 1. Schema validation for `llmo.task.v1`.
 2. Strict rejection for malformed v1 requests.
-3. Metrics/log labels from task metadata.
+3. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
+   placement, and backend ownership.
 4. Formal Postgres migration tooling and real-container integration tests.
 5. Reload hysteresis, persisted live LM Studio reconciliation, and explicit
    reserved-capacity accounting for unowned loads.
-6. Task execution metrics.
+6. Task execution logs and operator-facing status explanations.
 7. Zotero HTML queue submission with employer-provided payloads/prompts and
    artifact references.
 8. Allocation ids and task ownership in lifecycle.

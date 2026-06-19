@@ -549,10 +549,20 @@ def test_task_executor_runs_payload_and_records_result(
         )
         task_id = response.json()["tasks"][0]["task_id"]
         task_status = wait_for_task_state(proxy_port, task_id, "elvis", "succeeded")
+        metrics_response = httpx.get(
+            f"http://127.0.0.1:{proxy_port}/metrics",
+            timeout=5,
+        )
 
     assert response.status_code == 202
     assert task_status["result"]["status_code"] == 200
     assert task_status["result"]["body"]["choices"][0]["message"]["content"] == "ok"
+    metrics_text = metrics_response.text
+    assert "llmo_task_events_total" in metrics_text
+    assert 'event="succeeded"' in metrics_text
+    assert "llmo_tasks_by_state" in metrics_text
+    assert 'state="succeeded"' in metrics_text
+    assert "llmo_task_execution_seconds_count" in metrics_text
 
 
 def test_task_executor_retries_until_transient_backend_is_available(

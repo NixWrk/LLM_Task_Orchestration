@@ -205,6 +205,9 @@ class TaskStore(Protocol):
     def context_plans_by_model(self) -> dict[str, dict[str, Any]]:
         ...
 
+    def task_counts_by_state(self) -> dict[tuple[str, str, str, str, str, str], int]:
+        ...
+
     def get_task(self, tenant: str, task_id: str) -> StoredTask | None:
         ...
 
@@ -296,6 +299,13 @@ class InMemoryTaskStore:
             model: context_plan_for_model(tasks)
             for model, tasks in sorted(tasks_by_model.items())
         }
+
+    def task_counts_by_state(self) -> dict[tuple[str, str, str, str, str, str], int]:
+        counts: dict[tuple[str, str, str, str, str, str], int] = {}
+        for task in self._tasks_by_id.values():
+            key = task_state_count_key(task)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def get_task(self, tenant: str, task_id: str) -> StoredTask | None:
         task = self._tasks_by_id.get(task_id)
@@ -781,6 +791,17 @@ def choose_fair_task(candidates: list[StoredTask], all_tasks: list[StoredTask]) 
 
 def fairness_group_key(task: StoredTask) -> tuple[str, ...]:
     return tuple(str(getattr(task, field_name)) for field_name in FAIRNESS_GROUP_FIELDS)
+
+
+def task_state_count_key(task: StoredTask) -> tuple[str, str, str, str, str, str]:
+    return (
+        task.tenant,
+        task.project,
+        task.service,
+        task.task,
+        task.model,
+        task.state,
+    )
 
 
 def context_bucket(required_context_tokens: int) -> int:

@@ -205,6 +205,16 @@ def test_task_store_status_claim_and_result_flow() -> None:
     assert completed.attempt_count == 1
     assert completed.result == {"body": {"ok": True}}
     assert completed.finished_at is not None
+    assert store.task_counts_by_state() == {
+        (
+            "elvis",
+            "zotero",
+            "zotero-html-translate-worker",
+            "html_translate",
+            "zotero-html-translate",
+            "succeeded",
+        ): 1
+    }
 
 
 def test_task_store_retry_waits_until_next_attempt_is_due() -> None:

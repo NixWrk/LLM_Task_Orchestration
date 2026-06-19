@@ -46,6 +46,24 @@ def test_postgres_task_store_claim_result_and_context_plan() -> None:
     assert completed.finished_at is not None
     assert plan["queued_tasks"] == 1
     assert plan["recommended_lms_context_length"] == 16384
+    assert store.task_counts_by_state() == {
+        (
+            "elvis",
+            "zotero",
+            "zotero-html-translate-worker",
+            "html_translate",
+            "local-main",
+            "succeeded",
+        ): 1,
+        (
+            "elvis",
+            "zotero",
+            "zotero-html-translate-worker",
+            "html_translate",
+            "local-main",
+            "queued",
+        ): 1,
+    }
 
 
 def test_postgres_task_store_enforces_tenant_scoped_status_and_cancel() -> None:
@@ -187,6 +205,9 @@ class FakeCursor:
         if normalized.startswith("select model, count(*)"):
             self.count_by_model(params[0])
             return
+        if normalized.startswith("select tenant, project, service, task, model, state"):
+            self.count_by_task_state()
+            return
         if normalized.startswith("select") and "state = any" in normalized:
             self.rows = self.active_rows(params[0])
             return
@@ -327,6 +348,31 @@ class FakeCursor:
         self.rows = [
             {"model": model, "count": count}
             for model, count in sorted(counts.items())
+        ]
+
+    def count_by_task_state(self) -> None:
+        counts: dict[tuple[str, str, str, str, str, str], int] = {}
+        for row in self.database.rows.values():
+            key = (
+                row["tenant"],
+                row["project"],
+                row["service"],
+                row["task"],
+                row["model"],
+                row["state"],
+            )
+            counts[key] = counts.get(key, 0) + 1
+        self.rows = [
+            {
+                "tenant": key[0],
+                "project": key[1],
+                "service": key[2],
+                "task": key[3],
+                "model": key[4],
+                "state": key[5],
+                "count": count,
+            }
+            for key, count in sorted(counts.items())
         ]
 
     def active_rows(self, states: list[str]) -> list[dict[str, Any]]:
