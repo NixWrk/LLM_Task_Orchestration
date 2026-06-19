@@ -736,6 +736,10 @@ multi-process workers. A SQLite or JSON-file implementation may be useful for
 local development, but it must implement the same `TaskStore` contract so client
 behavior does not change.
 
+Current local durable mode uses `JsonFileTaskStore`, enabled by setting
+`TASK_STORE_PATH` for queue proxy. When unset, queue proxy uses the in-memory
+store for ephemeral development and tests.
+
 Minimum durable task fields:
 
 | Field | Notes |
@@ -761,7 +765,8 @@ Implemented now:
 2. `orchestration` stripping before upstream forwarding.
 3. Bounded overrides for queue limits and token limits.
 4. Strict `POST /tasks/queue` batch submission for tenant-scoped task queues.
-5. In-memory `TaskStore` implementation for the first queue/capacity check.
+5. `TaskStore` abstraction with in-memory and JSON-file implementations for
+   queue/capacity checks.
 6. Queue submission triggers lifecycle reconcile from per-model queue lengths.
 7. Dynamic model policy from `dynamic_models`.
 8. Lifecycle `POST /allocations` for dynamic LM Studio/OpenAI-compatible
@@ -776,7 +781,7 @@ Needed next:
 1. Schema validation for `llmo.task.v1`.
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
-4. Tenant-scoped persistent task queue and idempotency store.
+4. Tenant-scoped list/status APIs and production Postgres task store.
 5. Allocation ids and task ownership in lifecycle.
 6. External GPU reservation API for non-LLM consumers such as OCR.
 7. Python client helpers that build the canonical envelope.

@@ -27,7 +27,8 @@ Implemented:
 
 1. Strict `llmo.task.v1` documentation and examples.
 2. `POST /tasks/queue` accepts a tenant-scoped batch of tasks.
-3. In-memory task store tracks accepted tasks and tenant-scoped idempotency.
+3. `TaskStore` interface with in-memory and JSON-file implementations tracks
+   accepted tasks and tenant-scoped idempotency.
 4. Queue proxy computes `queue_lengths` per model.
 5. Queue proxy computes first-pass `context_plans`:
    - estimated input tokens;
@@ -46,7 +47,7 @@ Implemented:
 Important gap:
 
 Lifecycle currently does not yet make placement/reload decisions from
-`context_plans`, and tasks are not yet executed durably by the orchestrator.
+`context_plans`, and tasks are not yet executed by the orchestrator.
 
 ## Design Principles
 
@@ -66,9 +67,20 @@ Lifecycle currently does not yet make placement/reload decisions from
 Replace the in-memory task store with a storage interface and a production
 implementation.
 
+Status:
+
+1. Done: `TaskStore` interface for queue submission, queue lengths, and context
+   plans.
+2. Done: `JsonFileTaskStore` selected by `TASK_STORE_PATH` for durable local
+   queue state and restart-safe idempotency.
+3. Done: in-memory store remains the default dev/test fallback.
+4. Next: expand the interface with fetch/list/update/claim/result operations.
+5. Next: add Postgres implementation and migrations for multi-worker
+   production execution.
+
 ### Tasks
 
-1. Define `TaskStore` interface:
+1. Extend `TaskStore` interface:
    - `submit_many(tasks)`;
    - `get_task(tenant, task_id)`;
    - `list_tasks(tenant, filters)`;

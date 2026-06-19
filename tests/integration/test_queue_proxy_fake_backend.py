@@ -355,6 +355,96 @@ def test_task_queue_submission_reconciles_capacity(
     assert body["capacity"]["result"]["models"][0]["decisions"][0]["gpu_id"] == "gpu0"
 
 
+def test_task_queue_submission_survives_queue_proxy_restart(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    registry_port = unused_tcp_port_factory()
+    first_proxy_port = unused_tcp_port_factory()
+    second_proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    unused_backend_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+    payload = {
+        "model": "local-main",
+        "orchestration": {
+            "schema_version": "llmo.task.v1",
+            "tenant": "elvis",
+            "project": "zotero",
+            "service": "zotero-html-translate-worker",
+            "task": "html_translate",
+            "priority": "batch",
+            "max_parallel": 4,
+        },
+        "tasks": [
+            {
+                "job_id": "zotero:item:ABCD1234:source-html:ru",
+                "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                "tokens": {
+                    "estimated_input_tokens": 5200,
+                    "max_output_tokens": 1200,
+                },
+            },
+            {
+                "job_id": "zotero:item:EFGH5678:source-html:ru",
+                "idempotency_key": "zotero:item:EFGH5678:source-html:ru:v1",
+                "tokens": {
+                    "estimated_input_tokens": 9200,
+                    "max_output_tokens": 1800,
+                },
+            },
+        ],
+    }
+
+    with running_fake_registry(
+        registry_port,
+        f"http://127.0.0.1:{unused_backend_port}/v1",
+    ):
+        with running_queue_proxy(
+            first_proxy_port,
+            unused_static_upstream_port,
+            config_path,
+            registry_port=registry_port,
+            require_registry_backend=True,
+            task_store_path=task_store_path,
+        ):
+            first_response = httpx.post(
+                f"http://127.0.0.1:{first_proxy_port}/tasks/queue",
+                json=payload,
+                timeout=5,
+            )
+
+        with running_queue_proxy(
+            second_proxy_port,
+            unused_static_upstream_port,
+            config_path,
+            registry_port=registry_port,
+            require_registry_backend=True,
+            task_store_path=task_store_path,
+        ):
+            second_response = httpx.post(
+                f"http://127.0.0.1:{second_proxy_port}/tasks/queue",
+                json=payload,
+                timeout=5,
+            )
+
+    assert first_response.status_code == 202
+    first_body = first_response.json()
+    assert first_body["accepted_tasks"] == 2
+    assert first_body["reused_tasks"] == 0
+
+    assert second_response.status_code == 202
+    second_body = second_response.json()
+    assert second_body["accepted_tasks"] == 0
+    assert second_body["reused_tasks"] == 2
+    assert second_body["queue_lengths"] == {"local-main": 2}
+    assert second_body["context_plans"]["local-main"]["queued_tasks"] == 2
+    assert [
+        task["task_id"] for task in second_body["tasks"]
+    ] == [task["task_id"] for task in first_body["tasks"]]
+
+
 def test_client_timeout_before_upstream_headers_releases_registry_lease(
     tmp_path: Path,
     unused_tcp_port_factory: object,

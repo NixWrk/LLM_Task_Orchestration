@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     enable_backend_registry_routing: bool = False
     require_backend_registry_backend: bool = False
     queue_proxy_api_key: str = ""
+    task_store_path: str = Field(default="", validation_alias="TASK_STORE_PATH")
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     log_level: str = "INFO"
 

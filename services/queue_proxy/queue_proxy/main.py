@@ -34,8 +34,8 @@ from queue_proxy.responses import error_response
 from queue_proxy.routing import BackendResolver
 from queue_proxy.settings import Settings
 from queue_proxy.task_queue import (
-    InMemoryTaskStore,
     TaskProtocolError,
+    build_task_store,
     parse_task_queue_payload,
 )
 
@@ -53,7 +53,7 @@ backend_registry_client = (
 request_preparer = RequestPreparationService(policy_registry)
 backend_resolver = BackendResolver(settings, backend_registry_client, logger)
 forwarder = UpstreamForwarder(settings.request_timeout_seconds, settings.upstream_api_key)
-task_store = InMemoryTaskStore()
+task_store = build_task_store(settings.task_store_path)
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 
 

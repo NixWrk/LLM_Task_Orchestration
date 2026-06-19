@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from typing import Protocol
 from uuid import uuid4
 
 SCHEMA_VERSION = "llmo.task.v1"
@@ -78,6 +81,77 @@ class StoredTask:
             "reused": reused,
         }
 
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "tenant": self.tenant,
+            "project": self.project,
+            "service": self.service,
+            "task": self.task,
+            "job_id": self.job_id,
+            "idempotency_key": self.idempotency_key,
+            "priority": self.priority,
+            "model": self.model,
+            "endpoint": self.endpoint,
+            "estimated_input_tokens": self.estimated_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "required_context_tokens": self.required_context_tokens,
+            "state": self.state,
+            "payload": self.payload,
+            "orchestration": self.orchestration,
+            "artifacts": self.artifacts,
+            "labels": self.labels,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> StoredTask:
+        return cls(
+            task_id=string_value(record.get("task_id"), "task_id"),
+            tenant=string_value(record.get("tenant"), "tenant"),
+            project=string_value(record.get("project"), "project"),
+            service=string_value(record.get("service"), "service"),
+            task=string_value(record.get("task"), "task"),
+            job_id=string_value(record.get("job_id"), "job_id"),
+            idempotency_key=string_value(
+                record.get("idempotency_key"),
+                "idempotency_key",
+            ),
+            priority=string_value(record.get("priority"), "priority"),
+            model=string_value(record.get("model"), "model"),
+            endpoint=string_value(record.get("endpoint"), "endpoint"),
+            estimated_input_tokens=optional_non_negative_int(
+                record.get("estimated_input_tokens"),
+                "estimated_input_tokens",
+            )
+            or 0,
+            max_output_tokens=optional_positive_int(
+                record.get("max_output_tokens"),
+                "max_output_tokens",
+            )
+            or DEFAULT_MAX_OUTPUT_TOKENS,
+            required_context_tokens=optional_positive_int(
+                record.get("required_context_tokens"),
+                "required_context_tokens",
+            )
+            or 1,
+            state=string_value(record.get("state") or "queued", "state"),
+            payload=optional_mapping(record.get("payload"), "payload"),
+            orchestration=optional_mapping(record.get("orchestration"), "orchestration"),
+            artifacts=optional_mapping(record.get("artifacts"), "artifacts"),
+            labels=optional_mapping(record.get("labels"), "labels"),
+        )
+
+
+class TaskStore(Protocol):
+    def submit_many(self, tasks: list[QueueTask]) -> tuple[list[StoredTask], list[StoredTask]]:
+        ...
+
+    def queue_lengths_by_model(self) -> dict[str, int]:
+        ...
+
+    def context_plans_by_model(self) -> dict[str, dict[str, Any]]:
+        ...
+
 
 class InMemoryTaskStore:
     def __init__(self) -> None:
@@ -116,6 +190,7 @@ class InMemoryTaskStore:
             self._tasks_by_id[task_id] = stored
             self._idempotency_index[(task.tenant, task.idempotency_key)] = task_id
             accepted.append(stored)
+        self._after_mutation()
         return accepted, reused
 
     def queue_lengths_by_model(self) -> dict[str, int]:
@@ -135,6 +210,65 @@ class InMemoryTaskStore:
             model: context_plan_for_model(tasks)
             for model, tasks in sorted(tasks_by_model.items())
         }
+
+    def _after_mutation(self) -> None:
+        return None
+
+    def _load_tasks(self, tasks: list[StoredTask]) -> None:
+        self._tasks_by_id = {}
+        self._idempotency_index = {}
+        for task in tasks:
+            self._tasks_by_id[task.task_id] = task
+            self._idempotency_index[(task.tenant, task.idempotency_key)] = task.task_id
+
+
+class JsonFileTaskStore(InMemoryTaskStore):
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        super().__init__()
+        self._load_from_disk()
+
+    def _after_mutation(self) -> None:
+        self._save_to_disk()
+
+    def _load_from_disk(self) -> None:
+        if not self.path.exists():
+            return
+
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TaskProtocolError("Task store file must contain a JSON object.")
+        raw_tasks = raw.get("tasks", [])
+        if not isinstance(raw_tasks, list):
+            raise TaskProtocolError("Task store file field 'tasks' must be an array.")
+        tasks = []
+        for index, raw_task in enumerate(raw_tasks):
+            if not isinstance(raw_task, dict):
+                raise TaskProtocolError(f"Task store tasks[{index}] must be an object.")
+            tasks.append(StoredTask.from_record(raw_task))
+        self._load_tasks(tasks)
+
+    def _save_to_disk(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "tasks": [
+                task.to_record()
+                for task in sorted(self._tasks_by_id.values(), key=lambda item: item.task_id)
+            ],
+        }
+        tmp_path = self.path.with_name(f"{self.path.name}.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        tmp_path.replace(self.path)
+
+
+def build_task_store(path: str | Path | None = None) -> TaskStore:
+    if path:
+        return JsonFileTaskStore(path)
+    return InMemoryTaskStore()
 
 
 def parse_task_queue_payload(payload: Any) -> list[QueueTask]:
@@ -299,6 +433,18 @@ def optional_positive_int(value: Any, field_name: str) -> int | None:
         raise TaskProtocolError(f"{field_name} must be a positive integer.") from exc
     if parsed < 1:
         raise TaskProtocolError(f"{field_name} must be a positive integer.")
+    return parsed
+
+
+def optional_non_negative_int(value: Any, field_name: str) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TaskProtocolError(f"{field_name} must be a non-negative integer.") from exc
+    if parsed < 0:
+        raise TaskProtocolError(f"{field_name} must be a non-negative integer.")
     return parsed
 
 

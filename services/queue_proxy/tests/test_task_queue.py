@@ -2,6 +2,7 @@ import pytest
 
 from queue_proxy.task_queue import (
     InMemoryTaskStore,
+    JsonFileTaskStore,
     TaskProtocolError,
     context_bucket,
     parse_task_queue_payload,
@@ -108,6 +109,61 @@ def test_task_store_builds_context_plan_for_model_queue() -> None:
     assert plan["total_slot_context_tokens"] == 32768
     assert plan["context_cap_tokens"] == 32768
     assert plan["oversized_tasks"] == []
+
+
+def test_json_file_task_store_persists_tasks_and_idempotency(tmp_path) -> None:
+    store_path = tmp_path / "tasks.json"
+    tasks = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+                "max_parallel": 4,
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:ABCD1234:source-html:ru",
+                    "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                    "tokens": {
+                        "estimated_input_tokens": 5200,
+                        "max_output_tokens": 1200,
+                    },
+                },
+                {
+                    "job_id": "zotero:item:EFGH5678:source-html:ru",
+                    "idempotency_key": "zotero:item:EFGH5678:source-html:ru:v1",
+                    "tokens": {
+                        "estimated_input_tokens": 9200,
+                        "max_output_tokens": 1800,
+                    },
+                },
+            ],
+        }
+    )
+    first_store = JsonFileTaskStore(store_path)
+
+    accepted, reused = first_store.submit_many(tasks)
+    restarted_store = JsonFileTaskStore(store_path)
+    duplicate_accepted, duplicate_reused = restarted_store.submit_many(tasks)
+
+    assert len(accepted) == 2
+    assert reused == []
+    assert duplicate_accepted == []
+    assert [task.task_id for task in duplicate_reused] == [
+        task.task_id for task in accepted
+    ]
+    assert restarted_store.queue_lengths_by_model() == {"zotero-html-translate": 2}
+    assert (
+        restarted_store.context_plans_by_model()["zotero-html-translate"][
+            "recommended_lms_parallel"
+        ]
+        == 2
+    )
 
 
 def test_context_bucket_returns_next_bucket() -> None:
