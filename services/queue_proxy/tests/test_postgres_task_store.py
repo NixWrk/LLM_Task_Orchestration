@@ -40,6 +40,7 @@ def test_postgres_task_store_claim_result_and_context_plan() -> None:
     plan = store.context_plans_by_model()["local-main"]
 
     assert claimed.task_id == accepted[0].task_id
+    assert claimed.attempt_count == 1
     assert completed.state == "succeeded"
     assert completed.result == {"body": {"ok": True}}
     assert completed.finished_at is not None
@@ -65,6 +66,28 @@ def test_postgres_task_store_enforces_tenant_scoped_status_and_cancel() -> None:
     assert cancelled.state == "cancelled"
     assert store.get_task("elvis", task_id).state == "cancelled"
     assert store.list_tasks("elvis", state="queued") == [accepted[1]]
+
+
+def test_postgres_task_store_records_retry_and_skips_future_attempt() -> None:
+    database = FakePostgresDatabase()
+    store = PostgresTaskStore(
+        "postgresql://test",
+        connect_factory=database.connect,
+    )
+    accepted, _reused = store.submit_many(sample_tasks())
+
+    claimed = store.claim_next(model="local-main")
+    retry = store.record_retry(
+        claimed.task_id,
+        {"type": "upstream_request_failed", "retryable": True},
+        "2999-01-01T00:00:00+00:00",
+    )
+    next_claimed = store.claim_next(model="local-main")
+
+    assert retry.state == "queued"
+    assert retry.attempt_count == 1
+    assert retry.next_attempt_at == "2999-01-01T00:00:00+00:00"
+    assert next_claimed.task_id == accepted[1].task_id
 
 
 def sample_tasks():
@@ -150,7 +173,11 @@ class FakeCursor:
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         normalized = " ".join(sql.lower().split())
-        if normalized.startswith("create table") or normalized.startswith("create index"):
+        if (
+            normalized.startswith("create table")
+            or normalized.startswith("create index")
+            or normalized.startswith("alter table")
+        ):
             self.database.schema_initialized = True
             self.rows = []
             return
@@ -186,7 +213,7 @@ class FakeCursor:
         if normalized.startswith("select"):
             self.list_tasks(normalized, params)
             return
-        if normalized.startswith("with next_task"):
+        if normalized.startswith("with group_scores") or normalized.startswith("with next_task"):
             self.claim_next(params)
             return
         if normalized.startswith("update llmo_tasks") and "state = 'succeeded'" in normalized:
@@ -200,6 +227,7 @@ class FakeCursor:
                     "state": "succeeded",
                     "result_json": result_json,
                     "error_json": None,
+                    "next_attempt_at": None,
                     "finished_at": finished_at,
                     "updated_at": updated_at,
                 }
@@ -216,7 +244,24 @@ class FakeCursor:
                 {
                     "state": "failed",
                     "error_json": error_json,
+                    "next_attempt_at": None,
                     "finished_at": finished_at,
+                    "updated_at": updated_at,
+                }
+            )
+            self.rows = [row]
+            return
+        if normalized.startswith("update llmo_tasks") and "state = 'queued'" in normalized:
+            error_json, next_attempt_at, updated_at, task_id = params
+            row = self.database.rows.get(task_id)
+            if row is None:
+                self.rows = []
+                return
+            row.update(
+                {
+                    "state": "queued",
+                    "error_json": error_json,
+                    "next_attempt_at": next_attempt_at,
                     "updated_at": updated_at,
                 }
             )
@@ -264,8 +309,10 @@ class FakeCursor:
             "labels_json": params[16],
             "created_at": params[17],
             "updated_at": params[18],
+            "attempt_count": 0,
             "started_at": None,
             "finished_at": None,
+            "next_attempt_at": None,
             "result_json": None,
             "error_json": None,
         }
@@ -314,19 +361,37 @@ class FakeCursor:
         self.rows = sorted(rows, key=lambda row: (row["created_at"], row["task_id"]))[:limit]
 
     def claim_next(self, params: tuple[Any, ...]) -> None:
-        states, model, _model_again, started_at, updated_at = params
+        (
+            states,
+            model,
+            _model_again,
+            now,
+            _states_again,
+            _model_third,
+            _model_fourth,
+            _now_again,
+            started_at,
+            updated_at,
+        ) = params
         candidates = [
             row
             for row in self.database.rows.values()
-            if row["state"] in states and (model is None or row["model"] == model)
+            if row["state"] in states
+            and (model is None or row["model"] == model)
+            and (
+                row.get("next_attempt_at") is None
+                or str(row["next_attempt_at"]) <= str(now)
+            )
         ]
-        candidates.sort(key=lambda row: (row["created_at"], row["task_id"]))
+        candidates.sort(key=self.claim_sort_key)
         if not candidates:
             self.rows = []
             return
         row = candidates[0]
         row["state"] = "running"
         row["started_at"] = row["started_at"] or started_at
+        row["attempt_count"] += 1
+        row["next_attempt_at"] = None
         row["updated_at"] = updated_at
         self.rows = [row]
 
@@ -342,5 +407,32 @@ class FakeCursor:
             return
         row["state"] = "cancelled"
         row["finished_at"] = row["finished_at"] or finished_at
+        row["next_attempt_at"] = None
         row["updated_at"] = updated_at
         self.rows = [row]
+
+    def claim_sort_key(self, row: dict[str, Any]) -> tuple[bool, str, str, tuple[str, ...], str]:
+        group = self.group_key(row)
+        last_claimed_at = None
+        for candidate in self.database.rows.values():
+            if self.group_key(candidate) != group or candidate["attempt_count"] < 1:
+                continue
+            if last_claimed_at is None or candidate["updated_at"] > last_claimed_at:
+                last_claimed_at = candidate["updated_at"]
+        return (
+            last_claimed_at is not None,
+            last_claimed_at or "",
+            row["created_at"],
+            group,
+            row["task_id"],
+        )
+
+    def group_key(self, row: dict[str, Any]) -> tuple[str, ...]:
+        return (
+            str(row["tenant"]),
+            str(row["project"]),
+            str(row["service"]),
+            str(row["task"]),
+            str(row["priority"]),
+            str(row["model"]),
+        )

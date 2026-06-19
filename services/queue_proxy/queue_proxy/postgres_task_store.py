@@ -37,8 +37,10 @@ TASK_COLUMNS = (
     "labels_json",
     "created_at",
     "updated_at",
+    "attempt_count",
     "started_at",
     "finished_at",
+    "next_attempt_at",
     "result_json",
     "error_json",
 )
@@ -174,23 +176,97 @@ class PostgresTaskStore(TaskStore):
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    WITH next_task AS (
-                        SELECT task_id
-                        FROM llmo_tasks
-                        WHERE state = ANY(%s)
-                          AND (%s IS NULL OR model = %s)
-                        ORDER BY created_at, task_id
+                    WITH group_scores AS (
+                        SELECT
+                            candidate.tenant,
+                            candidate.project,
+                            candidate.service,
+                            candidate.task,
+                            candidate.priority,
+                            candidate.model,
+                            MIN(candidate.created_at) AS oldest_runnable_at,
+                            (
+                                SELECT MAX(served.updated_at)
+                                FROM llmo_tasks served
+                                WHERE served.tenant = candidate.tenant
+                                  AND served.project = candidate.project
+                                  AND served.service = candidate.service
+                                  AND served.task = candidate.task
+                                  AND served.priority = candidate.priority
+                                  AND served.model = candidate.model
+                                  AND served.attempt_count > 0
+                            ) AS last_claimed_at
+                        FROM llmo_tasks candidate
+                        WHERE candidate.state = ANY(%s)
+                          AND (%s IS NULL OR candidate.model = %s)
+                          AND (
+                              candidate.next_attempt_at IS NULL
+                              OR candidate.next_attempt_at <= %s::timestamptz
+                          )
+                        GROUP BY
+                            candidate.tenant,
+                            candidate.project,
+                            candidate.service,
+                            candidate.task,
+                            candidate.priority,
+                            candidate.model
+                    ),
+                    selected_group AS (
+                        SELECT *
+                        FROM group_scores
+                        ORDER BY
+                            (last_claimed_at IS NOT NULL),
+                            last_claimed_at NULLS FIRST,
+                            oldest_runnable_at,
+                            tenant,
+                            project,
+                            service,
+                            task,
+                            priority,
+                            model
+                        LIMIT 1
+                    ),
+                    next_task AS (
+                        SELECT candidate.task_id
+                        FROM llmo_tasks candidate
+                        JOIN selected_group
+                          ON selected_group.tenant = candidate.tenant
+                         AND selected_group.project = candidate.project
+                         AND selected_group.service = candidate.service
+                         AND selected_group.task = candidate.task
+                         AND selected_group.priority = candidate.priority
+                         AND selected_group.model = candidate.model
+                        WHERE candidate.state = ANY(%s)
+                          AND (%s IS NULL OR candidate.model = %s)
+                          AND (
+                              candidate.next_attempt_at IS NULL
+                              OR candidate.next_attempt_at <= %s::timestamptz
+                          )
+                        ORDER BY candidate.created_at, candidate.task_id
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     )
                     UPDATE llmo_tasks
                     SET state = 'running',
                         started_at = COALESCE(started_at, %s),
+                        attempt_count = attempt_count + 1,
+                        next_attempt_at = NULL,
                         updated_at = %s
                     WHERE task_id IN (SELECT task_id FROM next_task)
                     {TASK_RETURNING_SQL}
                     """,
-                    (list(CLAIMABLE_STATES), model, model, now, now),
+                    (
+                        list(CLAIMABLE_STATES),
+                        model,
+                        model,
+                        now,
+                        list(CLAIMABLE_STATES),
+                        model,
+                        model,
+                        now,
+                        now,
+                        now,
+                    ),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -206,6 +282,7 @@ class PostgresTaskStore(TaskStore):
                     SET state = 'succeeded',
                         result_json = %s::jsonb,
                         error_json = NULL,
+                        next_attempt_at = NULL,
                         finished_at = %s,
                         updated_at = %s
                     WHERE task_id = %s
@@ -228,12 +305,40 @@ class PostgresTaskStore(TaskStore):
                     UPDATE llmo_tasks
                     SET state = 'failed',
                         error_json = %s::jsonb,
+                        next_attempt_at = NULL,
                         finished_at = %s,
                         updated_at = %s
                     WHERE task_id = %s
                     {TASK_RETURNING_SQL}
                     """,
                     (json.dumps(error), now, now, task_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            raise KeyError(task_id)
+        return stored_task_from_row(row)
+
+    def record_retry(
+        self,
+        task_id: str,
+        error: dict[str, Any],
+        next_attempt_at: str,
+    ) -> StoredTask:
+        now = now_iso()
+        with self.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE llmo_tasks
+                    SET state = 'queued',
+                        error_json = %s::jsonb,
+                        next_attempt_at = %s::timestamptz,
+                        updated_at = %s
+                    WHERE task_id = %s
+                    {TASK_RETURNING_SQL}
+                    """,
+                    (json.dumps(error), next_attempt_at, now, task_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -250,6 +355,7 @@ class PostgresTaskStore(TaskStore):
                     UPDATE llmo_tasks
                     SET state = 'cancelled',
                         finished_at = COALESCE(finished_at, %s),
+                        next_attempt_at = NULL,
                         updated_at = %s
                     WHERE tenant = %s
                       AND task_id = %s
@@ -298,12 +404,26 @@ class PostgresTaskStore(TaskStore):
                         labels_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
                         started_at TIMESTAMPTZ,
                         finished_at TIMESTAMPTZ,
+                        next_attempt_at TIMESTAMPTZ,
                         result_json JSONB,
                         error_json JSONB,
                         UNIQUE (tenant, idempotency_key)
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE llmo_tasks
+                    ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE llmo_tasks
+                    ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ
                     """
                 )
                 cur.execute(
@@ -316,6 +436,27 @@ class PostgresTaskStore(TaskStore):
                     """
                     CREATE INDEX IF NOT EXISTS llmo_tasks_tenant_state_idx
                     ON llmo_tasks (tenant, state, created_at, task_id)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS llmo_tasks_runnable_claim_idx
+                    ON llmo_tasks (state, model, next_attempt_at, created_at, task_id)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS llmo_tasks_fairness_idx
+                    ON llmo_tasks (
+                        tenant,
+                        project,
+                        service,
+                        task,
+                        priority,
+                        model,
+                        updated_at
+                    )
+                    WHERE attempt_count > 0
                     """
                 )
             conn.commit()
@@ -418,8 +559,10 @@ def stored_task_from_row(row: Any) -> StoredTask:
             "labels": json_value(record.get("labels_json"), {}),
             "created_at": iso_value(record.get("created_at")),
             "updated_at": iso_value(record.get("updated_at")),
+            "attempt_count": record.get("attempt_count", 0),
             "started_at": iso_value(record.get("started_at")),
             "finished_at": iso_value(record.get("finished_at")),
+            "next_attempt_at": iso_value(record.get("next_attempt_at")),
             "result": json_value(record.get("result_json"), None),
             "error": json_value(record.get("error_json"), None),
         }

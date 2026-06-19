@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any
 
@@ -443,35 +444,38 @@ async def task_executor_loop() -> None:
             await execute_stored_task(task)
         except Exception as exc:
             logger.exception("task_execution_failed task_id=%s", task.task_id)
-            task_store.record_error(
-                task.task_id,
+            record_task_failure(
+                task,
                 {
                     "type": type(exc).__name__,
                     "message": str(exc),
                 },
+                retryable=True,
             )
 
 
 async def execute_stored_task(task: StoredTask) -> None:
     if not task.payload:
-        task_store.record_error(
-            task.task_id,
+        record_task_failure(
+            task,
             {
                 "type": "missing_task_payload",
                 "message": "Durable task execution requires a stored OpenAI-compatible payload.",
             },
+            retryable=False,
         )
         return
 
     try:
         policy = policy_registry.resolve(task.model)
     except PolicyError as exc:
-        task_store.record_error(
-            task.task_id,
+        record_task_failure(
+            task,
             {
                 "type": exc.error_type,
                 "message": exc.message,
             },
+            retryable=False,
         )
         return
 
@@ -480,12 +484,13 @@ async def execute_stored_task(task: StoredTask) -> None:
         task.orchestration,
     )
     if upstream_base_url is None:
-        task_store.record_error(
-            task.task_id,
+        record_task_failure(
+            task,
             {
                 "type": "no_ready_backend",
                 "message": "No ready backend instance is available for this task.",
             },
+            retryable=True,
         )
         return
 
@@ -501,13 +506,25 @@ async def execute_stored_task(task: StoredTask) -> None:
                 json=clean_payload,
                 headers=task_executor_headers(),
             )
+    except httpx.HTTPError as exc:
+        record_task_failure(
+            task,
+            {
+                "type": "upstream_request_failed",
+                "message": "Upstream LLM gateway request failed.",
+                "error_type": type(exc).__name__,
+                "backend_instance_id": backend_instance_id,
+            },
+            retryable=True,
+        )
+        return
     finally:
         await backend_resolver.release(backend_instance_id)
 
     body = response_body(response)
     if response.status_code >= 400:
-        task_store.record_error(
-            task.task_id,
+        record_task_failure(
+            task,
             {
                 "type": "upstream_status",
                 "message": "Upstream LLM backend returned an error status.",
@@ -515,6 +532,7 @@ async def execute_stored_task(task: StoredTask) -> None:
                 "body": body,
                 "backend_instance_id": backend_instance_id,
             },
+            retryable=is_retryable_upstream_status(response.status_code),
         )
         return
 
@@ -526,6 +544,38 @@ async def execute_stored_task(task: StoredTask) -> None:
             "backend_instance_id": backend_instance_id,
         },
     )
+
+
+def record_task_failure(
+    task: StoredTask,
+    error: dict[str, Any],
+    *,
+    retryable: bool,
+) -> StoredTask:
+    enriched_error = {
+        **error,
+        "retryable": retryable,
+        "attempt_count": task.attempt_count,
+        "max_attempts": settings.task_executor_max_attempts,
+    }
+    if retryable and task.attempt_count < settings.task_executor_max_attempts:
+        delay_seconds = retry_delay_seconds(task.attempt_count)
+        next_attempt_at = (datetime.now(UTC) + timedelta(seconds=delay_seconds)).isoformat()
+        enriched_error["next_attempt_at"] = next_attempt_at
+        enriched_error["retry_delay_seconds"] = delay_seconds
+        return task_store.record_retry(task.task_id, enriched_error, next_attempt_at)
+
+    return task_store.record_error(task.task_id, enriched_error)
+
+
+def retry_delay_seconds(attempt_count: int) -> float:
+    exponent = max(0, attempt_count - 1)
+    delay = settings.task_executor_retry_base_seconds * (2**exponent)
+    return min(delay, settings.task_executor_retry_max_seconds)
+
+
+def is_retryable_upstream_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429} or status_code >= 500
 
 
 def task_executor_headers() -> dict[str, str]:

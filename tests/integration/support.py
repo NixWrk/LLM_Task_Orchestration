@@ -70,6 +70,9 @@ def running_queue_proxy(
     request_timeout_seconds: float = 1,
     task_store_path: Path | None = None,
     task_executor_enabled: bool = False,
+    task_executor_max_attempts: int | None = None,
+    task_executor_retry_base_seconds: float | None = None,
+    task_executor_retry_max_seconds: float | None = None,
 ) -> Iterator[None]:
     env = service_env("services/queue_proxy")
     env["QUEUE_PROXY_CONFIG_PATH"] = str(config_path)
@@ -81,6 +84,12 @@ def running_queue_proxy(
     if task_executor_enabled:
         env["TASK_EXECUTOR_ENABLED"] = "true"
         env["TASK_EXECUTOR_INTERVAL_SECONDS"] = "0.05"
+    if task_executor_max_attempts is not None:
+        env["TASK_EXECUTOR_MAX_ATTEMPTS"] = str(task_executor_max_attempts)
+    if task_executor_retry_base_seconds is not None:
+        env["TASK_EXECUTOR_RETRY_BASE_SECONDS"] = str(task_executor_retry_base_seconds)
+    if task_executor_retry_max_seconds is not None:
+        env["TASK_EXECUTOR_RETRY_MAX_SECONDS"] = str(task_executor_retry_max_seconds)
     if registry_port is not None:
         env["BACKEND_REGISTRY_URL"] = f"http://127.0.0.1:{registry_port}"
         env["ENABLE_BACKEND_REGISTRY_ROUTING"] = "true"

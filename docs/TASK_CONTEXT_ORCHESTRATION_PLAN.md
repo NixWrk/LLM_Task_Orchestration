@@ -47,9 +47,9 @@ Implemented:
 Important gap:
 
 The orchestrator has a first working task-driven loop, but production operation
-still needs Postgres storage, retry policy, equal-priority fairness, live LM
-Studio ownership reconciliation, reload hysteresis, stronger VRAM planning,
-metrics, and operator CLI commands.
+still needs live LM Studio ownership reconciliation, reload hysteresis, stronger
+VRAM planning, metrics, operator CLI commands, real Postgres integration tests,
+and the first Zotero worker integration.
 
 ## Confirmed Product Decisions
 
@@ -61,8 +61,8 @@ metrics, and operator CLI commands.
 3. Once a task is accepted, the orchestrator owns execution: backend selection,
    retry decisions, capacity reconciliation, lease handling, and final status.
 4. For now all employers have equal scheduling priority. The `priority` field
-   stays in the protocol for future policy, but current fairness should not let
-   one tenant monopolize the queue.
+   stays in the protocol for future policy, but current fairness must not let
+   one employer group monopolize the queue.
 5. Lifecycle must reconcile registry state with live LM Studio state.
 6. Reload hysteresis is required before production use, so small context/slot
    changes do not unload and reload models repeatedly.
@@ -102,7 +102,9 @@ Status:
 4. Done: interface supports fetch/list/cancel/claim/result/error operations.
 5. Done: `PostgresTaskStore` selected by `TASK_STORE_BACKEND=postgres` and
    `TASK_STORE_DSN`, with startup schema creation.
-6. Next: add migration tooling and integration tests against a real Postgres
+6. Done: retry metadata (`attempt_count`, `next_attempt_at`) is stored durably
+   in JSON and Postgres.
+7. Next: add migration tooling and integration tests against a real Postgres
    container for multi-worker production execution.
 
 ### Tasks
@@ -327,13 +329,19 @@ Status:
    claims queued tasks with stored OpenAI-compatible payloads.
 4. Done: executor routes through backend resolver, records upstream results, and
    releases registry leases.
-5. Next: add orchestrator-owned retries, equal-priority multi-tenant fairness,
-   and employer-provided payload/template execution for HTML translation tasks.
+5. Done: executor-owned retry policy for transient backend errors.
+6. Done: durable tasks expose `attempt_count`, `next_attempt_at`, and stable
+   retryable/permanent error metadata.
+7. Done: task claiming uses equal-priority fairness across
+   `(tenant, project, service, task, priority, model)` groups, so one employer
+   group cannot drain its whole batch before another due group gets a turn.
+8. Next: add task execution metrics and employer-provided payload/template
+   integration for HTML translation tasks.
 
 ### Tasks
 
 1. Add task worker loop in queue proxy or a dedicated service.
-2. Claim tasks fairly by `(tenant, priority, model)`.
+2. Claim tasks fairly by `(tenant, project, service, task, priority, model)`.
 3. Build OpenAI-compatible payload from stored task payload and orchestration.
 4. Route through existing queue proxy/backend resolver.
 5. Store:
@@ -361,6 +369,10 @@ Status:
 2. Completed tasks survive service restart.
 3. Failed tasks expose stable error types.
 4. Tenant isolation is enforced for all task APIs.
+5. Retryable failures return to `queued` with `next_attempt_at`; permanent
+   failures end in `failed` with `retryable: false`.
+6. Equal-priority claiming rotates between employer groups instead of draining
+   one group's entire queue first.
 
 ## Phase 7: Zotero HTML Translation Integration
 
@@ -446,5 +458,6 @@ reserves only `20 + 1 GiB`.
 4. LM Studio inspect/estimate adapter.
 5. Graceful reload policy.
 6. Durable task executor.
-7. Zotero worker queue submission.
-8. Observability/CLI polish.
+7. Task retry policy and equal-priority task claiming.
+8. Zotero worker queue submission.
+9. Observability/CLI polish.

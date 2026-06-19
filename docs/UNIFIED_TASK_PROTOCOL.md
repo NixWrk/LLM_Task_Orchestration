@@ -200,6 +200,8 @@ Successful response:
       "max_output_tokens": 1200,
       "required_context_tokens": 6400,
       "state": "queued",
+      "attempt_count": 0,
+      "next_attempt_at": null,
       "reused": false
     }
   ],
@@ -370,9 +372,10 @@ Recommended uniqueness rules:
 | `idempotency_key` | Unique inside `tenant`. |
 | durable `task_id` | Globally unique, but every lookup still checks tenant ownership. |
 
-Queue fairness should be calculated at least by `(tenant, priority, model)` so
-one tenant's batch queue cannot silently consume every active slot meant for
-other tenants.
+Queue fairness is currently calculated by
+`(tenant, project, service, task, priority, model)`. That makes the employer
+group explicit and prevents one tenant/service/task batch from silently
+consuming every due slot before another employer group gets a turn.
 
 ## Priority Classes
 
@@ -705,6 +708,35 @@ task once, receive task ids, and poll status. The orchestrator decides whether a
 failure is retryable, when to retry, and when to mark the task permanently
 failed.
 
+### Task And Execution Characteristics
+
+The employer owns the task description. These fields describe what should be
+done:
+
+1. `tenant`, `project`, `service`, and `task`;
+2. `job_id` and `idempotency_key`;
+3. `model` and `endpoint`;
+4. OpenAI-compatible `payload`, including the prompt when the task needs one;
+5. `artifacts` and `labels`;
+6. token estimates such as `estimated_input_tokens` and `max_output_tokens`;
+7. requested hints such as `priority`, `gpu`, `max_parallel`, and
+   `lms_context_length`.
+
+The orchestrator owns the execution characteristics. These fields explain how
+the accepted task is being or was executed:
+
+1. `state`, `created_at`, `updated_at`, `started_at`, and `finished_at`;
+2. `attempt_count`, `next_attempt_at`, and the final retry decision;
+3. selected backend instance and GPU ids when known;
+4. effective context/parallel plan for the model queue;
+5. final response body, usage, or artifact references;
+6. stable `error.type`, `retryable`, `attempt_count`, and `max_attempts` when
+   execution fails.
+
+Retryable executor failures return to `queued` with `next_attempt_at`.
+Permanent failures, or retryable failures after the configured attempt limit,
+end in `failed`.
+
 ## Client Rules
 
 Every client project should:
@@ -756,7 +788,8 @@ The implementation should use a small storage interface, for example
 
 1. create or return task by `(tenant, idempotency_key)`;
 2. update task state and timestamps;
-3. claim the next runnable task by `(tenant, priority, model)`;
+3. claim the next runnable task by
+   `(tenant, project, service, task, priority, model)`;
 4. record allocation/backend assignment;
 5. store final response metadata or artifact refs;
 6. list tasks only inside the caller's tenant;
@@ -791,6 +824,7 @@ Minimum durable task fields:
 | `queue_position` | Derived or cached status field. |
 | `backend_instance_id`, `gpu_ids` | Assignment once known. |
 | `created_at`, `updated_at`, `started_at`, `finished_at`, `expires_at` | Timing. |
+| `attempt_count`, `next_attempt_at` | Retry scheduling and status metadata. |
 | `result_json` or `artifact_refs` | Final result metadata. |
 | `error_json` | Stable error object on failure. |
 
@@ -828,6 +862,11 @@ Implemented now:
    `TASK_STORE_DSN`.
 18. Lifecycle uses live `lms ps --json` shape before reload decisions and can
    use `lms load --estimate-only` for planned VRAM.
+19. Durable task retry metadata and executor retry policy:
+   `attempt_count`, `next_attempt_at`, retryable transient backend errors, and
+   permanent failure for invalid/non-executable tasks.
+20. Equal-priority task claiming across
+   `(tenant, project, service, task, priority, model)` employer groups.
 
 Needed next:
 
@@ -837,8 +876,7 @@ Needed next:
 4. Formal Postgres migration tooling and real-container integration tests.
 5. Reload hysteresis, persisted live LM Studio reconciliation, and explicit
    reserved-capacity accounting for unowned loads.
-6. Retry policy, equal-priority multi-tenant task claiming, and task execution
-   metrics.
+6. Task execution metrics.
 7. Zotero HTML queue submission with employer-provided payloads/prompts and
    artifact references.
 8. Allocation ids and task ownership in lifecycle.

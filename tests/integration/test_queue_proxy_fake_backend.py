@@ -555,6 +555,112 @@ def test_task_executor_runs_payload_and_records_result(
     assert task_status["result"]["body"]["choices"][0]["message"]["content"] == "ok"
 
 
+def test_task_executor_retries_until_transient_backend_is_available(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+
+    with running_queue_proxy(
+        proxy_port,
+        fake_port,
+        config_path,
+        request_timeout_seconds=0.2,
+        task_store_path=task_store_path,
+        task_executor_enabled=True,
+        task_executor_max_attempts=5,
+        task_executor_retry_base_seconds=0.3,
+        task_executor_retry_max_seconds=0.3,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:RETRY:source-html:ru",
+                        "idempotency_key": "zotero:item:RETRY:source-html:ru:v1",
+                        "payload": {
+                            "model": "local-main",
+                            "messages": [{"role": "user", "content": "hello"}],
+                            "max_tokens": 8,
+                        },
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        retry_status = wait_for_task_attempt(proxy_port, task_id, "elvis", 1, "queued")
+
+        with running_fake_backend(fake_port):
+            task_status = wait_for_task_state(proxy_port, task_id, "elvis", "succeeded")
+
+    assert response.status_code == 202
+    assert retry_status["error"]["retryable"] is True
+    assert retry_status["error"]["type"] == "upstream_request_failed"
+    assert task_status["attempt_count"] >= 2
+    assert task_status["result"]["body"]["choices"][0]["message"]["content"] == "ok"
+
+
+def test_task_executor_does_not_retry_missing_payload(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    proxy_port = unused_tcp_port_factory()
+    unused_static_upstream_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+
+    with running_queue_proxy(
+        proxy_port,
+        unused_static_upstream_port,
+        config_path,
+        task_store_path=task_store_path,
+        task_executor_enabled=True,
+        task_executor_max_attempts=5,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:NO_PAYLOAD:source-html:ru",
+                        "idempotency_key": "zotero:item:NO_PAYLOAD:source-html:ru:v1",
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        task_status = wait_for_task_state(proxy_port, task_id, "elvis", "failed")
+
+    assert response.status_code == 202
+    assert task_status["attempt_count"] == 1
+    assert task_status["error"]["retryable"] is False
+    assert task_status["error"]["type"] == "missing_task_payload"
+
+
 def test_client_timeout_before_upstream_headers_releases_registry_lease(
     tmp_path: Path,
     unused_tcp_port_factory: object,
@@ -852,3 +958,29 @@ def wait_for_task_state(
             return last_body
         time.sleep(0.05)
     raise AssertionError(f"Task {task_id} did not reach {state}: {last_body}")
+
+
+def wait_for_task_attempt(
+    proxy_port: int,
+    task_id: str,
+    tenant: str,
+    min_attempt_count: int,
+    state: str | None = None,
+) -> dict[str, object]:
+    deadline = time.monotonic() + 5
+    last_body: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        response = httpx.get(
+            f"http://127.0.0.1:{proxy_port}/tasks/{task_id}",
+            params={"tenant": tenant},
+            timeout=5,
+        )
+        response.raise_for_status()
+        last_body = response.json()
+        state_matches = state is None or last_body.get("state") == state
+        if int(last_body.get("attempt_count", 0)) >= min_attempt_count and state_matches:
+            return last_body
+        time.sleep(0.05)
+    raise AssertionError(
+        f"Task {task_id} did not reach attempt {min_attempt_count}: {last_body}"
+    )

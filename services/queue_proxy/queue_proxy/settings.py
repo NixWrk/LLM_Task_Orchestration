@@ -26,6 +26,21 @@ class Settings(BaseSettings):
         gt=0,
         validation_alias="TASK_EXECUTOR_INTERVAL_SECONDS",
     )
+    task_executor_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        validation_alias="TASK_EXECUTOR_MAX_ATTEMPTS",
+    )
+    task_executor_retry_base_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        validation_alias="TASK_EXECUTOR_RETRY_BASE_SECONDS",
+    )
+    task_executor_retry_max_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        validation_alias="TASK_EXECUTOR_RETRY_MAX_SECONDS",
+    )
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     log_level: str = "INFO"
 

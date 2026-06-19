@@ -202,8 +202,50 @@ def test_task_store_status_claim_and_result_flow() -> None:
     assert store.get_task("elvis", task.task_id) == task
     assert store.list_tasks("elvis", state="succeeded") == [task]
     assert completed.state == "succeeded"
+    assert completed.attempt_count == 1
     assert completed.result == {"body": {"ok": True}}
     assert completed.finished_at is not None
+
+
+def test_task_store_retry_waits_until_next_attempt_is_due() -> None:
+    tasks = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:ABCD1234:source-html:ru",
+                    "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                    "payload": {
+                        "model": "zotero-html-translate",
+                        "messages": [{"role": "user", "content": "translate"}],
+                    },
+                }
+            ],
+        }
+    )
+    store = InMemoryTaskStore()
+    accepted, _reused = store.submit_many(tasks)
+
+    claimed = store.claim_next()
+    retry = store.record_retry(
+        accepted[0].task_id,
+        {"type": "upstream_request_failed", "retryable": True},
+        "2999-01-01T00:00:00+00:00",
+    )
+
+    assert claimed == accepted[0]
+    assert retry.state == "queued"
+    assert retry.attempt_count == 1
+    assert retry.next_attempt_at == "2999-01-01T00:00:00+00:00"
+    assert store.claim_next() is None
 
 
 def test_task_store_cancel_is_tenant_scoped() -> None:
@@ -282,6 +324,61 @@ def test_task_store_claim_treats_current_priorities_as_equal() -> None:
     store.submit_many(interactive)
 
     assert store.claim_next() == accepted_batch[0]
+
+
+def test_task_store_claims_fairly_between_employers() -> None:
+    tenant_a = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "tenant-a",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "tenant-a:first",
+                    "idempotency_key": "tenant-a:first:v1",
+                },
+                {
+                    "job_id": "tenant-a:second",
+                    "idempotency_key": "tenant-a:second:v1",
+                },
+            ],
+        }
+    )
+    tenant_b = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "tenant-b",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "tenant-b:first",
+                    "idempotency_key": "tenant-b:first:v1",
+                }
+            ],
+        }
+    )
+    store = InMemoryTaskStore()
+    accepted_a, _reused = store.submit_many(tenant_a)
+    accepted_b, _reused = store.submit_many(tenant_b)
+
+    first = store.claim_next()
+    store.record_result(first.task_id, {"body": {"ok": True}})
+    second = store.claim_next()
+
+    assert first == accepted_a[0]
+    assert second == accepted_b[0]
 
 
 def test_context_bucket_returns_next_bucket() -> None:

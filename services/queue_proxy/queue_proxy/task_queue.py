@@ -12,6 +12,7 @@ SCHEMA_VERSION = "llmo.task.v1"
 ACTIVE_STATES = {"submitted", "queued", "allocating", "starting", "warming", "running"}
 CLAIMABLE_STATES = {"queued"}
 PRIORITIES = {"interactive", "foreground", "batch", "maintenance"}
+FAIRNESS_GROUP_FIELDS = ("tenant", "project", "service", "task", "priority", "model")
 CONTEXT_BUCKETS = (2048, 4096, 8192, 16384, 32768, 65536, 131072)
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
@@ -65,8 +66,10 @@ class StoredTask:
     labels: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: now_iso())
     updated_at: str = field(default_factory=lambda: now_iso())
+    attempt_count: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+    next_attempt_at: str | None = None
     result: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
 
@@ -86,6 +89,8 @@ class StoredTask:
             "max_output_tokens": self.max_output_tokens,
             "required_context_tokens": self.required_context_tokens,
             "state": self.state,
+            "attempt_count": self.attempt_count,
+            "next_attempt_at": self.next_attempt_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "reused": reused,
@@ -99,8 +104,10 @@ class StoredTask:
                 "orchestration": self.orchestration,
                 "artifacts": self.artifacts,
                 "labels": self.labels,
+                "attempt_count": self.attempt_count,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
+                "next_attempt_at": self.next_attempt_at,
                 "result": self.result,
                 "error": self.error,
             }
@@ -129,8 +136,10 @@ class StoredTask:
             "labels": self.labels,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "attempt_count": self.attempt_count,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "next_attempt_at": self.next_attempt_at,
             "result": self.result,
             "error": self.error,
         }
@@ -173,8 +182,14 @@ class StoredTask:
             labels=optional_mapping(record.get("labels"), "labels"),
             created_at=optional_string(record.get("created_at")) or now_iso(),
             updated_at=optional_string(record.get("updated_at")) or now_iso(),
+            attempt_count=optional_non_negative_int(
+                record.get("attempt_count"),
+                "attempt_count",
+            )
+            or 0,
             started_at=optional_string(record.get("started_at")),
             finished_at=optional_string(record.get("finished_at")),
+            next_attempt_at=optional_string(record.get("next_attempt_at")),
             result=optional_mapping_or_none(record.get("result"), "result"),
             error=optional_mapping_or_none(record.get("error"), "error"),
         )
@@ -210,6 +225,14 @@ class TaskStore(Protocol):
         ...
 
     def record_error(self, task_id: str, error: dict[str, Any]) -> StoredTask:
+        ...
+
+    def record_retry(
+        self,
+        task_id: str,
+        error: dict[str, Any],
+        next_attempt_at: str,
+    ) -> StoredTask:
         ...
 
     def cancel_task(self, tenant: str, task_id: str) -> StoredTask | None:
@@ -299,23 +322,21 @@ class InMemoryTaskStore:
         return tasks[: max(1, limit)]
 
     def claim_next(self, *, model: str | None = None) -> StoredTask | None:
+        now = utc_now()
         candidates = [
             task
             for task in self._tasks_by_id.values()
-            if task.state in CLAIMABLE_STATES and (model is None or task.model == model)
+            if is_task_claimable(task, now, model)
         ]
         if not candidates:
             return None
-        candidates.sort(
-            key=lambda task: (
-                task.created_at,
-                task.task_id,
-            )
-        )
-        task = candidates[0]
+        task = choose_fair_task(candidates, list(self._tasks_by_id.values()))
+        now_text = now_iso(now)
         task.state = "running"
-        task.started_at = task.started_at or now_iso()
-        task.updated_at = now_iso()
+        task.attempt_count += 1
+        task.started_at = task.started_at or now_text
+        task.updated_at = now_text
+        task.next_attempt_at = None
         self._after_mutation()
         return task
 
@@ -324,6 +345,7 @@ class InMemoryTaskStore:
         task.state = "succeeded"
         task.result = result
         task.error = None
+        task.next_attempt_at = None
         task.finished_at = now_iso()
         task.updated_at = task.finished_at
         self._after_mutation()
@@ -333,8 +355,23 @@ class InMemoryTaskStore:
         task = self._tasks_by_id[task_id]
         task.state = "failed"
         task.error = error
+        task.next_attempt_at = None
         task.finished_at = now_iso()
         task.updated_at = task.finished_at
+        self._after_mutation()
+        return task
+
+    def record_retry(
+        self,
+        task_id: str,
+        error: dict[str, Any],
+        next_attempt_at: str,
+    ) -> StoredTask:
+        task = self._tasks_by_id[task_id]
+        task.state = "queued"
+        task.error = error
+        task.next_attempt_at = next_attempt_at
+        task.updated_at = now_iso()
         self._after_mutation()
         return task
 
@@ -345,6 +382,7 @@ class InMemoryTaskStore:
         if task.state in {"succeeded", "failed", "cancelled"}:
             return task
         task.state = "cancelled"
+        task.next_attempt_at = None
         task.finished_at = now_iso()
         task.updated_at = task.finished_at
         self._after_mutation()
@@ -695,6 +733,56 @@ def context_cap_for_task(task: StoredTask) -> int | None:
     return optional_positive_int(task.orchestration.get("lms_context_length"), "lms_context_length")
 
 
+def is_task_claimable(
+    task: StoredTask,
+    now: datetime,
+    model: str | None = None,
+) -> bool:
+    if task.state not in CLAIMABLE_STATES:
+        return False
+    if model is not None and task.model != model:
+        return False
+    if task.next_attempt_at is None:
+        return True
+    return parse_iso_datetime(task.next_attempt_at) <= now
+
+
+def choose_fair_task(candidates: list[StoredTask], all_tasks: list[StoredTask]) -> StoredTask:
+    group_candidates: dict[tuple[str, ...], list[StoredTask]] = {}
+    for task in candidates:
+        group_candidates.setdefault(fairness_group_key(task), []).append(task)
+
+    last_claimed_by_group: dict[tuple[str, ...], str] = {}
+    for task in all_tasks:
+        if task.attempt_count < 1:
+            continue
+        group_key = fairness_group_key(task)
+        current = last_claimed_by_group.get(group_key)
+        if current is None or task.updated_at > current:
+            last_claimed_by_group[group_key] = task.updated_at
+
+    def group_sort_key(group_key: tuple[str, ...]) -> tuple[bool, str, str, tuple[str, ...]]:
+        group_tasks = group_candidates[group_key]
+        oldest_created_at = min(task.created_at for task in group_tasks)
+        last_claimed_at = last_claimed_by_group.get(group_key)
+        return (
+            last_claimed_at is not None,
+            last_claimed_at or "",
+            oldest_created_at,
+            group_key,
+        )
+
+    selected_group = min(group_candidates, key=group_sort_key)
+    return min(
+        group_candidates[selected_group],
+        key=lambda task: (task.created_at, task.task_id),
+    )
+
+
+def fairness_group_key(task: StoredTask) -> tuple[str, ...]:
+    return tuple(str(getattr(task, field_name)) for field_name in FAIRNESS_GROUP_FIELDS)
+
+
 def context_bucket(required_context_tokens: int) -> int:
     required = max(1, required_context_tokens)
     for bucket in CONTEXT_BUCKETS:
@@ -703,5 +791,16 @@ def context_bucket(required_context_tokens: int) -> int:
     return required
 
 
-def now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def now_iso(value: datetime | None = None) -> str:
+    return (value or utc_now()).isoformat()
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
