@@ -826,6 +826,8 @@ Implemented now:
    resolver, records results/errors, and releases backend leases.
 17. Postgres task-store backend selected by `TASK_STORE_BACKEND=postgres` and
    `TASK_STORE_DSN`.
+18. Lifecycle uses live `lms ps --json` shape before reload decisions and can
+   use `lms load --estimate-only` for planned VRAM.
 
 Needed next:
 
@@ -833,7 +835,8 @@ Needed next:
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
 4. Formal Postgres migration tooling and real-container integration tests.
-5. Reload hysteresis and live LM Studio ownership reconciliation.
+5. Reload hysteresis, persisted live LM Studio reconciliation, and explicit
+   reserved-capacity accounting for unowned loads.
 6. Retry policy, equal-priority multi-tenant task claiming, and task execution
    metrics.
 7. Zotero HTML queue submission with employer-provided payloads/prompts and

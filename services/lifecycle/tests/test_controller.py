@@ -12,7 +12,10 @@ from lifecycle.controller import (
     idle_seconds,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
-from lifecycle.lmstudio import estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata
+from lifecycle.lmstudio import (
+    LmStudioLoad,
+    estimate_vram_mb as estimate_vram_mb_from_lmstudio_metadata,
+)
 from lifecycle.models import BackendInstance, ContextPlan, GpuState, ModelProfile
 from lifecycle.registry import BackendRegistry
 from lifecycle.runtime import RuntimeLifecycleService, should_verify_before_start
@@ -244,6 +247,94 @@ def test_plan_reuses_lmstudio_shape_when_it_already_satisfies_context_plan(
     decision = result["models"][0]["decisions"][0]
     assert decision["action"] == "noop"
     assert decision["reason"] == "desired_replicas_satisfied"
+
+
+def test_plan_uses_live_lmstudio_shape_before_reloading(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            metadata={"lms_context_length": 8192, "lms_parallel": 1},
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+    monkeypatch.setattr(
+        "lifecycle.controller.estimate_lmstudio_load_vram_mb",
+        lambda _profile: None,
+    )
+    monkeypatch.setattr(
+        "lifecycle.controller.inspect_loaded_model",
+        lambda _model, _binary: LmStudioLoad(
+            identifier="local-main",
+            model_key="local-main",
+            status="loaded",
+            context_length=32768,
+            parallel=2,
+            gpu="max",
+            ttl_seconds=3600,
+            raw={},
+        ),
+    )
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    decision = result["models"][0]["decisions"][0]
+    assert decision["action"] == "noop"
+    assert decision["reason"] == "desired_replicas_satisfied"
+
+
+def test_plan_uses_lmstudio_estimate_for_future_vram_shape(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    controller = lifecycle_controller_for_plan(tmp_path)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 40_000, 1_000, 39_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+    monkeypatch.setattr(
+        "lifecycle.controller.estimate_lmstudio_load_vram_mb",
+        lambda _profile: 26_072,
+    )
+
+    result = asyncio.run(
+        controller.plan(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=32768,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    shape = result["models"][0]["desired_backend_shape"]
+    decision = result["models"][0]["decisions"][0]
+    assert shape["estimated_vram_mb"] == 26_072
+    assert decision["required_vram_mb"] == 26_072 + 1024
 
 
 def test_reconcile_marks_active_lmstudio_reload_draining(

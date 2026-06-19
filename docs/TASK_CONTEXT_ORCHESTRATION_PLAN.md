@@ -231,10 +231,12 @@ Status:
 2. Done: `lms load --estimate-only` command builder and GPU-memory parser.
 3. Done: lifecycle records planned LM Studio shape in backend registry metadata.
 4. Done: dry-run lifecycle no longer calls real LM Studio load/unload commands.
-5. Next: reconcile registry metadata with live `lms ps --json` state on startup
-   and before reload decisions.
-6. Next: compare current and planned VRAM with `lms load --estimate-only`, while
-   reserving memory used by unowned LM Studio loads.
+5. Done: lifecycle compares reload decisions against live `lms ps --json`
+   shape before relying on registry metadata.
+6. Done: lifecycle can use `lms load --estimate-only` to override planned VRAM
+   for the future backend shape.
+7. Next: persist live LM Studio reconciliation results and reserve memory used
+   by unowned LM Studio loads.
 
 ### Tasks
 

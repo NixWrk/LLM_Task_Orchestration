@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import httpx
 
+from lifecycle.adapters import estimate_lmstudio_load_vram_mb
 from lifecycle.allocation import profile_with_context_plan
 from lifecycle.allocation_service import AllocationService
 from lifecycle.cleanup import CleanupService, idle_seconds
@@ -13,6 +15,7 @@ from lifecycle.config import (
     load_model_profiles,
 )
 from lifecycle.dynamic_policy import dynamic_model_allowed
+from lifecycle.lmstudio import inspect_loaded_model
 from lifecycle.models import (
     BackendInstance,
     ContextPlan,
@@ -126,9 +129,15 @@ class LifecycleController:
 
         for profile in profiles.values():
             context_plan = context_plans.get(profile.public_name)
-            effective_profile = profile_with_context_plan(profile, context_plan)
+            effective_profile = profile_with_lmstudio_estimate(
+                profile_with_context_plan(profile, context_plan)
+            )
             ready_count = len(self.registry.ready_for_model(profile.public_name))
-            active_count = len(self.registry.active_for_model(profile.public_name))
+            active_instances = [
+                instance_with_live_lmstudio_shape(effective_profile, instance)
+                for instance in self.registry.active_for_model(profile.public_name)
+            ]
+            active_count = len(active_instances)
             queue_length = max(
                 queue_lengths.get(profile.public_name, 0),
                 context_plan.queued_tasks if context_plan is not None else 0,
@@ -152,7 +161,7 @@ class LifecycleController:
                 if not decisions and queue_length > 0:
                     reload_decision = reload_decision_for_context_plan(
                         effective_profile,
-                        self.registry.active_for_model(profile.public_name),
+                        active_instances,
                         context_plan,
                     )
                     if reload_decision is not None:
@@ -211,6 +220,7 @@ class LifecycleController:
                 profiles[model_plan["model"]],
                 context_plans.get(model_plan["model"]),
             )
+            profile = profile_with_lmstudio_estimate(profile)
             gpus = {gpu.id: gpu for gpu in await self.gpu_states()}
             for decision_payload in model_plan["decisions"]:
                 if decision_payload["action"] == "reload":
@@ -310,6 +320,7 @@ class LifecycleController:
             return {"state": "skipped", "reason": "missing_instance_id"}
 
         instance = self.registry.get(instance_id)
+        instance = instance_with_live_lmstudio_shape(profile, instance)
         if instance.active_requests > 0:
             draining = (
                 instance
@@ -427,3 +438,46 @@ def lms_context_length_from_instance(instance: BackendInstance) -> int | None:
 
 def lms_parallel_from_instance(instance: BackendInstance) -> int | None:
     return optional_int(instance.metadata.get("lms_parallel"))
+
+
+def profile_with_lmstudio_estimate(profile: ModelProfile) -> ModelProfile:
+    if profile.runtime != "lmstudio":
+        return profile
+    try:
+        estimated_vram_mb = estimate_lmstudio_load_vram_mb(profile)
+    except Exception:
+        return profile
+    if not estimated_vram_mb:
+        return profile
+    return replace(profile, estimated_vram_mb=estimated_vram_mb)
+
+
+def instance_with_live_lmstudio_shape(
+    profile: ModelProfile,
+    instance: BackendInstance,
+) -> BackendInstance:
+    if profile.runtime != "lmstudio":
+        return instance
+    try:
+        loaded = inspect_loaded_model(
+            instance.backend_model,
+            str(instance.metadata.get("lms_binary") or profile.lms_binary),
+        )
+    except Exception:
+        return instance
+    if loaded is None:
+        return instance
+
+    copy = BackendInstance.from_dict(instance.to_dict())
+    copy.metadata = dict(copy.metadata)
+    copy.metadata["live_lmstudio_load"] = loaded.to_dict()
+    copy.metadata["lmstudio_identifier"] = loaded.identifier
+    if loaded.context_length is not None:
+        copy.metadata["lms_context_length"] = loaded.context_length
+    if loaded.parallel is not None:
+        copy.metadata["lms_parallel"] = loaded.parallel
+    if loaded.gpu is not None:
+        copy.metadata["lms_gpu"] = loaded.gpu
+    if loaded.ttl_seconds is not None:
+        copy.metadata["lms_ttl_seconds"] = loaded.ttl_seconds
+    return copy
