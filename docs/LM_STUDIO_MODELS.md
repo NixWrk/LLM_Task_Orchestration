@@ -113,6 +113,58 @@ Lifecycle then runs `lms load <backend_model> --identifier <backend_model> --yes
 
 On Windows with Docker Compose, the lifecycle container normally cannot execute the host `lms.exe`. Use `cli-if-available` for Docker safety, or run lifecycle directly on the host when you want real CLI control.
 
+## Verify GPU Loading
+
+When LM Studio is the backend, model weights are loaded by `LM Studio.exe` on the
+host, not by the Docker containers. It is normal for orchestrator containers,
+LiteLLM, Postgres, Redis, Prometheus, or Grafana to use system RAM. That RAM use
+does not prove the model is CPU-bound.
+
+For GPU-backed loading, use an explicit CLI load command:
+
+```powershell
+lms load p6_google_gemma-4-26b-a4b@q6_k `
+  --gpu max `
+  --context-length 32768 `
+  --parallel 1 `
+  --ttl 3600 `
+  --identifier p6_google_gemma-4-26b-a4b@q6_k `
+  --yes
+```
+
+Check the resource estimate without loading:
+
+```powershell
+lms load p6_google_gemma-4-26b-a4b@q6_k `
+  --gpu max `
+  --context-length 32768 `
+  --parallel 1 `
+  --estimate-only `
+  --yes
+```
+
+Expected signs of a GPU load:
+
+1. `lms ps` shows the model with the requested context and parallel count.
+2. `nvidia-smi` shows `LM Studio.exe` as a GPU process.
+3. VRAM usage rises by roughly the model estimate.
+4. A queue-proxy request to `http://localhost:4100/v1/chat/completions` succeeds
+   for the same model identifier.
+
+For the Zotero translation profile, the current baseline is:
+
+```text
+model: p6_google_gemma-4-26b-a4b@q6_k
+context_length: 32768
+parallel: 1
+gpu: max
+estimated_gpu_memory: about 25.5 GiB
+```
+
+If system RAM rises but `nvidia-smi` does not show `LM Studio.exe`, the model was
+not GPU-offloaded as expected or the backend is not LM Studio. First verify the
+actual loaded model with `lms ps`, then reload with `--gpu max`.
+
 ## Route Through The Registry
 
 For direct routing to ready LM Studio/vLLM backends:

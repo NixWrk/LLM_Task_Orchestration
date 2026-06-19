@@ -161,20 +161,19 @@ The working directory should group repositories by role:
 
 ```text
 D:/Elvis_projects/
-  zotero/
+  Zotero_Automation/
     Zotero_automatization/
     zotero-ingest-worker/
     zotero-html-translate-worker/
     zotero-file-relay/
-  ocr/
-    Surya_Chandra_PDF_OCR/
-  orcestrator/
-    LLM_Orcestration/
+  Surya_Chandra_PDF_OCR/
+  LLM_Orchestrator/
 ```
 
-`ocr` and `orcestrator` are universal infrastructure projects. Large product
-projects, such as Zotero automation, live under their own project folder and call
-those infrastructure services through their public APIs.
+`Surya_Chandra_PDF_OCR` and `LLM_Orchestrator` are universal infrastructure
+projects. Large product projects, such as Zotero automation, live under their
+own project folder and call those infrastructure services through their public
+APIs.
 
 ## Implementation Tasks
 
