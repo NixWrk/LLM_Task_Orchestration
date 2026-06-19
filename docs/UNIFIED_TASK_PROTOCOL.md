@@ -121,6 +121,18 @@ Example HTML translation queue:
 {
   "model": "zotero-html-translate",
   "endpoint": "/v1/chat/completions",
+  "payload_template": {
+    "model": "{{model}}",
+    "messages": [
+      {"role": "system", "content": "{{system_prompt}}"},
+      {"role": "user", "content": "Translate to Russian:\n\n{{html}}"}
+    ],
+    "temperature": 0,
+    "max_tokens": "{{max_tokens}}"
+  },
+  "template_vars": {
+    "system_prompt": "Translate scientific HTML to Russian."
+  },
   "orchestration": {
     "schema_version": "llmo.task.v1",
     "tenant": "elvis",
@@ -145,6 +157,10 @@ Example HTML translation queue:
       "artifacts": {
         "input_ref": "file:///data/zotero/ABCD1234/02.en.polish.html",
         "output_ref": "file:///data/zotero/ABCD1234/03.ru.translate.html"
+      },
+      "template_vars": {
+        "html": "<p>...</p>",
+        "max_tokens": 1200
       }
     },
     {
@@ -157,6 +173,10 @@ Example HTML translation queue:
       "artifacts": {
         "input_ref": "file:///data/zotero/EFGH5678/02.en.polish.html",
         "output_ref": "file:///data/zotero/EFGH5678/03.ru.translate.html"
+      },
+      "template_vars": {
+        "html": "<p>...</p>",
+        "max_tokens": 1800
       }
     }
   ]
@@ -235,6 +255,14 @@ per-task token estimates, but it does not decide slot count or context length.
 The orchestrator rounds each model's maximum required context into a context
 bucket, chooses the requested number of active slots from queue length and policy
 hints, and reports whether any task is too large for the declared context cap.
+
+`payload_template` is an employer-owned OpenAI payload template. The
+orchestrator only renders `{{variable}}` placeholders from common
+`template_vars`, each task's `template_vars`, plus standard task metadata such
+as `model`, `job_id`, `idempotency_key`, `artifacts`, and `labels`; it does not
+invent prompts. Per-task variables override common variables. If a template
+references an unknown variable, queue admission fails with
+`invalid_task_protocol`.
 
 ## Canonical Request
 
@@ -717,7 +745,8 @@ done:
 1. `tenant`, `project`, `service`, and `task`;
 2. `job_id` and `idempotency_key`;
 3. `model` and `endpoint`;
-4. OpenAI-compatible `payload`, including the prompt when the task needs one;
+4. OpenAI-compatible `payload`, or employer-owned `payload_template` plus
+   `template_vars`, including the prompt when the task needs one;
 5. `artifacts` and `labels`;
 6. token estimates such as `estimated_input_tokens` and `max_output_tokens`;
 7. requested hints such as `priority`, `gpu`, `max_parallel`, and
@@ -744,6 +773,12 @@ routing. For example, `/v1/chat/completions` tasks must include
 `payload.messages`, `/v1/completions` tasks must include `payload.prompt`, and
 `/v1/embeddings` tasks must include `payload.input`. Non-executable worker
 metadata is rejected as `invalid_task_payload` with `retryable: false`.
+
+When a queue request includes `payload_template`, admission renders it into the
+stored task `payload`. A string that is exactly `{{name}}` preserves the
+variable's JSON type; a placeholder inside a longer string is rendered as text.
+This lets employers send numeric values such as `max_tokens` without turning
+them into strings.
 
 ## Client Rules
 
@@ -880,6 +915,8 @@ Implemented now:
 22. Durable executor validates endpoint-specific OpenAI-compatible payloads
     before routing and marks non-executable worker metadata as
     `invalid_task_payload`.
+23. Queue admission can render employer-provided `payload_template` objects with
+    per-task `template_vars` into stored OpenAI-compatible payloads.
 
 Needed next:
 

@@ -565,6 +565,68 @@ def test_task_executor_runs_payload_and_records_result(
     assert "llmo_task_execution_seconds_count" in metrics_text
 
 
+def test_task_executor_runs_employer_payload_template(
+    tmp_path: Path,
+    unused_tcp_port_factory: object,
+) -> None:
+    fake_port = unused_tcp_port_factory()
+    proxy_port = unused_tcp_port_factory()
+    config_path = write_policy_config(tmp_path)
+    task_store_path = tmp_path / "task-store.json"
+
+    with running_fake_backend(fake_port), running_queue_proxy(
+        proxy_port,
+        fake_port,
+        config_path,
+        task_store_path=task_store_path,
+        task_executor_enabled=True,
+    ):
+        response = httpx.post(
+            f"http://127.0.0.1:{proxy_port}/tasks/queue",
+            json={
+                "model": "local-main",
+                "endpoint": "/v1/chat/completions",
+                "payload_template": {
+                    "model": "{{model}}",
+                    "messages": [
+                        {"role": "system", "content": "{{system_prompt}}"},
+                        {"role": "user", "content": "Translate: {{text}}"},
+                    ],
+                    "max_tokens": "{{max_tokens}}",
+                },
+                "template_vars": {
+                    "system_prompt": "Translate scientific HTML to Russian.",
+                },
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:TEMPLATE:source-html:ru",
+                        "idempotency_key": "zotero:item:TEMPLATE:source-html:ru:v1",
+                        "template_vars": {
+                            "text": "<p>Hello.</p>",
+                            "max_tokens": 8,
+                        },
+                    }
+                ],
+            },
+            timeout=5,
+        )
+        task_id = response.json()["tasks"][0]["task_id"]
+        task_status = wait_for_task_state(proxy_port, task_id, "elvis", "succeeded")
+
+    assert response.status_code == 202
+    assert task_status["payload"]["messages"][1]["content"] == "Translate: <p>Hello.</p>"
+    assert task_status["payload"]["max_tokens"] == 8
+    assert task_status["result"]["body"]["choices"][0]["message"]["content"] == "ok"
+
+
 def test_task_executor_retries_until_transient_backend_is_available(
     tmp_path: Path,
     unused_tcp_port_factory: object,

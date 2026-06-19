@@ -63,6 +63,87 @@ def test_task_store_scopes_idempotency_by_tenant() -> None:
     assert store.queue_lengths_by_model() == {"zotero-html-translate": 1}
 
 
+def test_parse_task_queue_payload_renders_employer_payload_template() -> None:
+    tasks = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "endpoint": "/v1/chat/completions",
+            "payload_template": {
+                "model": "{{model}}",
+                "messages": [
+                    {"role": "system", "content": "{{system_prompt}}"},
+                    {
+                        "role": "user",
+                        "content": "Translate {{text}} from {{artifacts.input_ref}}.",
+                    },
+                ],
+                "max_tokens": "{{max_tokens}}",
+            },
+            "template_vars": {
+                "system_prompt": "Translate scientific HTML to Russian.",
+                "max_tokens": 999,
+            },
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:TEMPLATE:source-html:ru",
+                    "idempotency_key": "zotero:item:TEMPLATE:source-html:ru:v1",
+                    "artifacts": {"input_ref": "file:///tmp/source.html"},
+                    "template_vars": {
+                        "text": "<p>Hello.</p>",
+                        "max_tokens": 123,
+                    },
+                }
+            ],
+        }
+    )
+
+    task = tasks[0]
+
+    assert task.payload["model"] == "zotero-html-translate"
+    assert task.payload["messages"][0]["content"] == "Translate scientific HTML to Russian."
+    assert task.payload["messages"][1]["content"] == (
+        "Translate <p>Hello.</p> from file:///tmp/source.html."
+    )
+    assert task.payload["max_tokens"] == 123
+    assert task.max_output_tokens == 123
+    assert task.estimated_input_tokens > 0
+
+
+def test_parse_task_queue_payload_rejects_unknown_template_variable() -> None:
+    with pytest.raises(TaskProtocolError, match="unknown template variable"):
+        parse_task_queue_payload(
+            {
+                "model": "zotero-html-translate",
+                "payload_template": {
+                    "model": "{{model}}",
+                    "messages": [{"role": "user", "content": "{{missing_text}}"}],
+                },
+                "orchestration": {
+                    "schema_version": "llmo.task.v1",
+                    "tenant": "elvis",
+                    "project": "zotero",
+                    "service": "zotero-html-translate-worker",
+                    "task": "html_translate",
+                    "priority": "batch",
+                },
+                "tasks": [
+                    {
+                        "job_id": "zotero:item:TEMPLATE:source-html:ru",
+                        "idempotency_key": "zotero:item:TEMPLATE:source-html:ru:v1",
+                    }
+                ],
+            }
+        )
+
+
 def test_task_store_builds_context_plan_for_model_queue() -> None:
     tasks = parse_task_queue_payload(
         {

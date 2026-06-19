@@ -340,8 +340,10 @@ Status:
 9. Done: executor validates endpoint-specific OpenAI-compatible payload shape
    before routing, so worker metadata is not accidentally sent to an LLM
    backend as a chat request.
-10. Next: add employer-provided payload/template integration for HTML
-   translation tasks.
+10. Done: queue admission can render employer-provided `payload_template`
+    objects with per-task `template_vars` into stored OpenAI-compatible payloads.
+11. Next: update the Zotero worker to use `payload_template` or direct
+    OpenAI-compatible payloads for durable execution.
 
 ### Tasks
 
@@ -393,7 +395,9 @@ Status:
    LM Studio.
 3. Next: update the worker to submit either a real OpenAI-compatible payload
    for each durable task or an explicit employer-owned template that the
-   orchestrator can render without inventing prompts.
+   orchestrator can render without inventing prompts. The orchestrator side of
+   `payload_template` rendering is implemented; the worker still needs to send
+   text/template variables instead of only runner metadata.
 
 ### Tasks
 

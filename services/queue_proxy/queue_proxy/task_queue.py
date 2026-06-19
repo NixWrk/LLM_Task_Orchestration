@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ FAIRNESS_GROUP_FIELDS = ("tenant", "project", "service", "task", "priority", "mo
 CONTEXT_BUCKETS = (2048, 4096, 8192, 16384, 32768, 65536, 131072)
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
+TEMPLATE_PATTERN = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*}}")
 
 
 class TaskProtocolError(ValueError):
@@ -477,6 +479,11 @@ def parse_task_queue_payload(payload: Any) -> list[QueueTask]:
 
     common_model = required_string(payload, "model")
     common_endpoint = string_value(payload.get("endpoint") or "/v1/chat/completions", "endpoint")
+    common_payload_template = optional_mapping_or_none(
+        payload.get("payload_template"),
+        "payload_template",
+    )
+    common_template_vars = optional_mapping(payload.get("template_vars"), "template_vars")
     raw_tasks = payload.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise TaskProtocolError("Task queue request requires a non-empty tasks array.")
@@ -485,7 +492,17 @@ def parse_task_queue_payload(payload: Any) -> list[QueueTask]:
     for index, raw_task in enumerate(raw_tasks):
         if not isinstance(raw_task, dict):
             raise TaskProtocolError(f"tasks[{index}] must be a JSON object.")
-        tasks.append(parse_queue_task(raw_task, common_orchestration, common_model, common_endpoint, index))
+        tasks.append(
+            parse_queue_task(
+                raw_task,
+                common_orchestration,
+                common_model,
+                common_endpoint,
+                common_payload_template,
+                common_template_vars,
+                index,
+            )
+        )
     return tasks
 
 
@@ -494,6 +511,8 @@ def parse_queue_task(
     common_orchestration: dict[str, Any],
     common_model: str,
     common_endpoint: str,
+    common_payload_template: dict[str, Any] | None,
+    common_template_vars: dict[str, Any],
     index: int,
 ) -> QueueTask:
     orchestration = dict(common_orchestration)
@@ -508,7 +527,27 @@ def parse_queue_task(
     )
     artifacts = optional_mapping(orchestration.get("artifacts"), f"tasks[{index}].artifacts")
     labels = optional_mapping(orchestration.get("labels"), f"tasks[{index}].labels")
-    payload = optional_mapping(raw_task.get("payload"), f"tasks[{index}].payload")
+    model = string_value(raw_task.get("model") or common_model, f"tasks[{index}].model")
+    endpoint = string_value(raw_task.get("endpoint") or common_endpoint, f"tasks[{index}].endpoint")
+    payload = task_payload_from_raw(
+        raw_task,
+        common_payload_template,
+        {
+            "model": model,
+            "endpoint": endpoint,
+            "job_id": job_id,
+            "idempotency_key": idempotency_key,
+            "tenant": common_orchestration.get("tenant"),
+            "project": common_orchestration.get("project"),
+            "service": common_orchestration.get("service"),
+            "task": common_orchestration.get("task"),
+            "priority": common_orchestration.get("priority"),
+            "artifacts": artifacts,
+            "labels": labels,
+        },
+        common_template_vars,
+        index,
+    )
     tokens = task_tokens(raw_task, orchestration, payload, index)
 
     return QueueTask(
@@ -519,8 +558,8 @@ def parse_queue_task(
         job_id=job_id,
         idempotency_key=idempotency_key,
         priority=string_value(common_orchestration.get("priority"), "orchestration.priority"),
-        model=string_value(raw_task.get("model") or common_model, f"tasks[{index}].model"),
-        endpoint=string_value(raw_task.get("endpoint") or common_endpoint, f"tasks[{index}].endpoint"),
+        model=model,
+        endpoint=endpoint,
         estimated_input_tokens=tokens["estimated_input_tokens"],
         max_output_tokens=tokens["max_output_tokens"],
         required_context_tokens=tokens["required_context_tokens"],
@@ -529,6 +568,82 @@ def parse_queue_task(
         artifacts=artifacts,
         labels=labels,
     )
+
+
+def task_payload_from_raw(
+    raw_task: dict[str, Any],
+    common_payload_template: dict[str, Any] | None,
+    base_vars: dict[str, Any],
+    common_template_vars: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    if "payload" in raw_task:
+        return optional_mapping(raw_task.get("payload"), f"tasks[{index}].payload")
+
+    raw_template = raw_task.get("payload_template")
+    template = (
+        optional_mapping(raw_template, f"tasks[{index}].payload_template")
+        if raw_template is not None
+        else common_payload_template
+    )
+    if template is None:
+        return {}
+
+    raw_vars = optional_mapping(raw_task.get("template_vars"), f"tasks[{index}].template_vars")
+    rendered = render_payload_template(
+        template,
+        {
+            **base_vars,
+            **common_template_vars,
+            **raw_vars,
+        },
+        f"tasks[{index}].payload_template",
+    )
+    if not isinstance(rendered, dict):
+        raise TaskProtocolError(f"tasks[{index}].payload_template must render to a JSON object.")
+    return rendered
+
+
+def render_payload_template(value: Any, variables: dict[str, Any], field_name: str) -> Any:
+    if isinstance(value, str):
+        return render_template_string(value, variables, field_name)
+    if isinstance(value, list):
+        return [
+            render_payload_template(item, variables, f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        return {
+            key: render_payload_template(item, variables, f"{field_name}.{key}")
+            for key, item in value.items()
+        }
+    return value
+
+
+def render_template_string(value: str, variables: dict[str, Any], field_name: str) -> Any:
+    full_match = TEMPLATE_PATTERN.fullmatch(value)
+    if full_match is not None:
+        return template_variable(variables, full_match.group(1), field_name)
+
+    def replace(match: re.Match[str]) -> str:
+        variable_name = match.group(1)
+        variable_value = template_variable(variables, variable_name, field_name)
+        if isinstance(variable_value, (dict, list)):
+            return json.dumps(variable_value, ensure_ascii=False, sort_keys=True)
+        return str(variable_value)
+
+    return TEMPLATE_PATTERN.sub(replace, value)
+
+
+def template_variable(variables: dict[str, Any], name: str, field_name: str) -> Any:
+    current: Any = variables
+    for part in name.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise TaskProtocolError(
+                f"{field_name} references unknown template variable {name!r}."
+            )
+        current = current[part]
+    return current
 
 
 def validate_common_orchestration(orchestration: dict[str, Any]) -> None:
