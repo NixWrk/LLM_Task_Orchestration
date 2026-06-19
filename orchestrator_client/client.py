@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 DEFAULT_QUEUE_PROXY_URL = "http://localhost:4100"
@@ -69,16 +70,59 @@ class OrchestratorClient:
         orchestration: dict[str, Any],
         tasks: list[dict[str, Any]],
         endpoint: str = "/v1/chat/completions",
+        payload_template: dict[str, Any] | None = None,
+        template_vars: dict[str, Any] | None = None,
     ) -> Any:
+        payload: dict[str, Any] = {
+            "model": model,
+            "endpoint": endpoint,
+            "orchestration": orchestration,
+            "tasks": tasks,
+        }
+        if payload_template is not None:
+            payload["payload_template"] = payload_template
+        if template_vars is not None:
+            payload["template_vars"] = template_vars
         return request_json(
             "POST",
             join_url(self.queue_url, "/tasks/queue"),
-            {
-                "model": model,
-                "endpoint": endpoint,
-                "orchestration": orchestration,
-                "tasks": tasks,
-            },
+            payload,
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def list_tasks(
+        self,
+        *,
+        tenant: str,
+        state: str | None = None,
+        model: str | None = None,
+        limit: int = 100,
+    ) -> Any:
+        params: dict[str, str] = {"tenant": tenant, "limit": str(limit)}
+        if state:
+            params["state"] = state
+        if model:
+            params["model"] = model
+        return request_json(
+            "GET",
+            join_url(self.queue_url, f"/tasks?{urlencode(params)}"),
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def get_task(self, task_id: str, *, tenant: str) -> Any:
+        return request_json(
+            "GET",
+            join_url(self.queue_url, f"/tasks/{task_id}?{urlencode({'tenant': tenant})}"),
+            api_key=self.api_key,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def cancel_task(self, task_id: str, *, tenant: str) -> Any:
+        return request_json(
+            "DELETE",
+            join_url(self.queue_url, f"/tasks/{task_id}?{urlencode({'tenant': tenant})}"),
             api_key=self.api_key,
             timeout_seconds=self.timeout_seconds,
         )

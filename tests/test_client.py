@@ -78,6 +78,77 @@ def test_client_submit_task_queue_uses_queue_endpoint(monkeypatch) -> None:
     assert calls[0][4] == 12
 
 
+def test_client_submit_task_queue_can_include_payload_template(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None, str | None, float]] = []
+
+    def fake_request_json(
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None = None,
+        api_key: str | None = None,
+        timeout_seconds: float = 240,
+    ) -> dict[str, str]:
+        calls.append((method, url, payload, api_key, timeout_seconds))
+        return {"status": "accepted"}
+
+    monkeypatch.setattr("orchestrator_client.client.request_json", fake_request_json)
+
+    OrchestratorClient(queue_url="http://queue/").submit_task_queue(
+        model="local-main",
+        orchestration={
+            "schema_version": "llmo.task.v1",
+            "tenant": "elvis",
+            "project": "zotero",
+            "service": "worker",
+            "task": "html_translate",
+            "priority": "batch",
+        },
+        payload_template={"model": "{{model}}"},
+        template_vars={"system_prompt": "translate"},
+        tasks=[{"job_id": "job", "idempotency_key": "key"}],
+    )
+
+    assert calls[0][2]["payload_template"] == {"model": "{{model}}"}
+    assert calls[0][2]["template_vars"] == {"system_prompt": "translate"}
+
+
+def test_client_task_status_methods_are_tenant_scoped(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None, str | None, float]] = []
+
+    def fake_request_json(
+        method: str,
+        url: str,
+        payload: dict[str, Any] | None = None,
+        api_key: str | None = None,
+        timeout_seconds: float = 240,
+    ) -> dict[str, str]:
+        calls.append((method, url, payload, api_key, timeout_seconds))
+        return {"ok": "true"}
+
+    monkeypatch.setattr("orchestrator_client.client.request_json", fake_request_json)
+    client = OrchestratorClient(
+        queue_url="http://queue/",
+        api_key="sk-test",
+        timeout_seconds=12,
+    )
+
+    client.list_tasks(tenant="elvis", state="queued", model="local-main", limit=25)
+    client.get_task("task_123", tenant="elvis")
+    client.cancel_task("task_123", tenant="elvis")
+
+    assert calls[0] == (
+        "GET",
+        "http://queue/tasks?tenant=elvis&limit=25&state=queued&model=local-main",
+        None,
+        "sk-test",
+        12,
+    )
+    assert calls[1][0] == "GET"
+    assert calls[1][1] == "http://queue/tasks/task_123?tenant=elvis"
+    assert calls[2][0] == "DELETE"
+    assert calls[2][1] == "http://queue/tasks/task_123?tenant=elvis"
+
+
 def test_join_url_normalizes_slashes() -> None:
     assert join_url("http://localhost:4100/", "/v1/models") == (
         "http://localhost:4100/v1/models"

@@ -75,6 +75,8 @@ CLI:
 llmoctl models
 llmoctl allocate mistralai/ministral-3-3b --gpu auto --lms-gpu max
 llmoctl chat mistralai/ministral-3-3b "Return exactly: ok" --max-tokens 8
+llmoctl tasks --tenant elvis --state queued
+llmoctl task task_123 --tenant elvis
 llmoctl cleanup
 ```
 
@@ -369,7 +371,7 @@ Implemented now:
 - Dynamic model allocation from request payloads through lifecycle `POST /allocations`.
 - LM Studio dynamic loading/unloading through `lms load/unload` when the CLI is available.
 - LM Studio VRAM auto-estimation from `lms ls --json` metadata.
-- `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, cleanup, and metrics.
+- `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, durable task status/cancel, cleanup, and metrics.
 - Prometheus metrics for lifecycle GPU/model/allocation state and queue proxy queue/request state.
 - Registry cleanup TTL for old LM Studio allocation records.
 - Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.

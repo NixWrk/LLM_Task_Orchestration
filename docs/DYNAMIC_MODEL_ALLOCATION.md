@@ -217,6 +217,9 @@ llmoctl registry
 llmoctl allocate qwen/qwen3.5-9b --gpu auto --lms-gpu max --lms-context-length 8192
 llmoctl chat qwen/qwen3.5-9b "Return exactly: ok" --max-tokens 8
 llmoctl embeddings text-embedding-bge-m3 "hello"
+llmoctl tasks --tenant elvis --state queued
+llmoctl task task_123 --tenant elvis
+llmoctl cancel-task task_123 --tenant elvis
 llmoctl cleanup
 llmoctl metrics
 ```
@@ -227,6 +230,7 @@ Useful environment defaults:
 LLMO_QUEUE_URL=http://localhost:4100
 LLMO_LIFECYCLE_URL=http://localhost:4300
 LLMO_API_KEY=<queue-proxy-api-key>
+LLMO_TENANT=elvis
 ```
 
 ## Cleanup And Metrics

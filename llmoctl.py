@@ -15,6 +15,10 @@ from orchestrator_client import (
 )
 
 
+class CliError(Exception):
+    pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -27,6 +31,9 @@ def main(argv: list[str] | None = None) -> int:
     except URLError as exc:
         print(f"Request failed: {exc.reason}", file=sys.stderr)
         return 1
+    except CliError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     if result is not None:
         print_json(result)
@@ -57,6 +64,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     metrics = subparsers.add_parser("metrics", help="Print lifecycle Prometheus metrics")
     metrics.set_defaults(func=cmd_metrics)
+
+    tasks = subparsers.add_parser("tasks", help="List durable tasks for a tenant")
+    add_task_query_args(tasks)
+    tasks.set_defaults(func=cmd_tasks)
+
+    task = subparsers.add_parser("task", help="Get one durable task by id")
+    task.add_argument("task_id")
+    add_tenant_arg(task)
+    task.set_defaults(func=cmd_task)
+
+    cancel_task = subparsers.add_parser("cancel-task", help="Cancel a durable task")
+    cancel_task.add_argument("task_id")
+    add_tenant_arg(cancel_task)
+    cancel_task.set_defaults(func=cmd_cancel_task)
 
     allocate = subparsers.add_parser("allocate", help="Allocate a backend for a model")
     allocate.add_argument("model")
@@ -110,6 +131,23 @@ def cmd_metrics(args: argparse.Namespace) -> str:
     return client_from_args(args).metrics()
 
 
+def cmd_tasks(args: argparse.Namespace) -> Any:
+    return client_from_args(args).list_tasks(
+        tenant=require_tenant(args),
+        state=args.state,
+        model=args.model,
+        limit=args.limit,
+    )
+
+
+def cmd_task(args: argparse.Namespace) -> Any:
+    return client_from_args(args).get_task(args.task_id, tenant=require_tenant(args))
+
+
+def cmd_cancel_task(args: argparse.Namespace) -> Any:
+    return client_from_args(args).cancel_task(args.task_id, tenant=require_tenant(args))
+
+
 def cmd_allocate(args: argparse.Namespace) -> Any:
     return client_from_args(args).allocate(args.model, orchestration_from_args(args))
 
@@ -160,6 +198,32 @@ def orchestration_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "no_warmup", False):
         payload["warmup_enabled"] = False
     return payload
+
+
+def add_tenant_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--tenant",
+        default=(
+            os.environ.get("LLMO_TENANT")
+            or os.environ.get("LLM_ORCHESTRATOR_TENANT")
+            or ""
+        ),
+        help="Tenant namespace for durable task status APIs.",
+    )
+
+
+def add_task_query_args(parser: argparse.ArgumentParser) -> None:
+    add_tenant_arg(parser)
+    parser.add_argument("--state")
+    parser.add_argument("--model")
+    parser.add_argument("--limit", type=int, default=100)
+
+
+def require_tenant(args: argparse.Namespace) -> str:
+    tenant = str(getattr(args, "tenant", "") or "").strip()
+    if not tenant:
+        raise CliError("durable task commands require --tenant or LLMO_TENANT.")
+    return tenant
 
 
 def print_json(value: Any) -> None:

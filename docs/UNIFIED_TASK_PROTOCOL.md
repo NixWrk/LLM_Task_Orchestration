@@ -917,6 +917,8 @@ Implemented now:
     `invalid_task_payload`.
 23. Queue admission can render employer-provided `payload_template` objects with
     per-task `template_vars` into stored OpenAI-compatible payloads.
+24. `llmoctl tasks`, `llmoctl task <id>`, and `llmoctl cancel-task <id>` expose
+    tenant-scoped durable task inspection and cancellation from the operator CLI.
 
 Needed next:
 
@@ -932,4 +934,4 @@ Needed next:
    artifact references.
 8. Allocation ids and task ownership in lifecycle.
 9. External GPU reservation API for non-LLM consumers such as OCR.
-10. Python client helpers that build the canonical envelope.
+10. More Python client helpers that build the canonical envelope.

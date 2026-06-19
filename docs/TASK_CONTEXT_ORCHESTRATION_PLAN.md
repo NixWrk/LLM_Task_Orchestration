@@ -435,8 +435,10 @@ Status:
    - current tasks by state;
    - queue wait duration;
    - execution duration.
-2. Next: add lifecycle/reload/GPU metrics, richer structured logs, dashboards,
-   and operator CLI commands.
+2. Done: `llmoctl tasks`, `llmoctl task <id>`, and `llmoctl cancel-task <id>`
+   inspect and control tenant-scoped durable tasks.
+3. Next: add lifecycle/reload/GPU metrics, richer structured logs, dashboards,
+   and plan-explanation CLI commands.
 
 ### Tasks
 
@@ -456,6 +458,7 @@ Status:
 3. CLI:
    - `llmoctl tasks`;
    - `llmoctl task <id>`;
+   - `llmoctl cancel-task <id>`;
    - `llmoctl queue submit`;
    - `llmoctl explain-plan`.
 
