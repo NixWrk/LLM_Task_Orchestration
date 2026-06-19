@@ -537,6 +537,9 @@ def test_reconcile_marks_active_lmstudio_reload_draining(
     assert reloaded["reason"] == "active_requests_present"
     assert registry.get("lmstudio-1").state == "draining"
     assert registry.get("lmstudio-1").active_requests == 1
+    assert controller.reload_results[
+        ("local-main", "draining", "active_requests_present")
+    ] == 1
 
 
 def test_reconcile_reloads_idle_owned_lmstudio_backend(
@@ -711,6 +714,7 @@ def test_reconcile_records_external_lmstudio_load_as_reserved_capacity(
     assert external["state"] == "external"
     assert external["metadata"]["lmstudio_ownership"] == "external"
     assert registry.reserved_vram_by_gpu()["gpu0"] == 9 * 1024
+    assert controller.live_reconciliation_results[("local-main", "external")] == 1
 
 
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:

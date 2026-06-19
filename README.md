@@ -375,7 +375,7 @@ Implemented now:
 - LM Studio VRAM auto-estimation from `lms ls --json` metadata.
 - `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, durable task status/cancel, plan explanation, cleanup, and metrics.
 - Postgres durable task store with startup schema version checks.
-- Prometheus metrics for lifecycle GPU/model/allocation state and queue proxy queue/request state.
+- Prometheus metrics for lifecycle GPU/model/allocation/reload state and queue proxy queue/request state.
 - Registry cleanup TTL for old LM Studio allocation records.
 - Production-oriented Docker vLLM lifecycle: model volumes, Docker socket/CLI launch, healthcheck, warmup, `starting -> ready`, and idle drain/stop.
 - Real-run preparation script and documentation.

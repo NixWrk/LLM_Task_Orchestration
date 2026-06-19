@@ -939,11 +939,13 @@ Implemented now:
     `schema_version: llmo.task.v1` envelopes and rejects malformed identity,
     priority, token/resource hint, artifact, label, and GPU fields as
     `invalid_task_protocol`.
+29. Lifecycle metrics include reload outcomes and live LM Studio reconciliation
+    events.
 
 Needed next:
 
-1. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
-   placement, and backend ownership.
+1. Expanded metrics/log labels from task metadata for GPU placement and backend
+   ownership.
 2. Formal Postgres migration tooling and real-container integration tests.
 3. Task execution logs and richer operator-facing task status history.
 4. Zotero HTML queue submission with employer-provided payloads/prompts and

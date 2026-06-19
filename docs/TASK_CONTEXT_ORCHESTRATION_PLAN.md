@@ -302,7 +302,7 @@ Status:
    loads from external loads before reload/cleanup.
 7. Done: operator-facing plan explanations are exposed through lifecycle and
    `llmoctl explain-plan`.
-8. Next: add reload/reconciliation metrics.
+8. Done: lifecycle exports reload and live LM Studio reconciliation counters.
 
 ### Tasks
 
@@ -458,8 +458,9 @@ Status:
    inspect and control tenant-scoped durable tasks.
 3. Done: lifecycle `POST /explain-plan`, queue proxy `GET /tasks/explain`, and
    `llmoctl explain-plan` explain current queue placement/reload decisions.
-4. Next: add lifecycle/reload/GPU metrics, richer structured logs, and
-   dashboards.
+4. Done: lifecycle exports reload and live LM Studio reconciliation counters.
+5. Next: add richer structured logs, dashboards, and deeper planned-vs-actual
+   GPU/context metrics.
 
 ### Tasks
 

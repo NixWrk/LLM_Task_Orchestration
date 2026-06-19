@@ -50,6 +50,8 @@ class LifecycleController:
         self.dry_run = dry_run
         self.docker_binary = docker_binary
         self.allocation_results: dict[tuple[str, str], int] = {}
+        self.reload_results: dict[tuple[str, str, str], int] = {}
+        self.live_reconciliation_results: dict[tuple[str, str], int] = {}
         self.allocation_service = AllocationService(config_path, registry)
         self.runtime = RuntimeLifecycleService(
             registry=registry,
@@ -248,6 +250,11 @@ class LifecycleController:
         context_plans = context_plans or {}
         profiles = self.profiles()
         live_reconciled = self.sync_live_lmstudio_state(profiles)
+        for instance in live_reconciled:
+            self.record_live_reconciliation(
+                str(instance.get("model") or "unknown"),
+                str(instance.get("state") or "unknown"),
+            )
         stopped = await self.stop_idle_instances(profiles, queue_lengths)
         plan = await self.plan(queue_lengths, context_plans)
         created: list[dict[str, Any]] = []
@@ -262,7 +269,9 @@ class LifecycleController:
             gpus = {gpu.id: gpu for gpu in await self.gpu_states()}
             for decision_payload in model_plan["decisions"]:
                 if decision_payload["action"] == "reload":
-                    reloaded.append(await self.reload_instance(profile, decision_payload, gpus))
+                    reload_result = await self.reload_instance(profile, decision_payload, gpus)
+                    self.record_reload_result(profile.public_name, reload_result)
+                    reloaded.append(reload_result)
                     continue
                 if decision_payload["action"] != "start" or not decision_payload["gpu_id"]:
                     continue
@@ -340,6 +349,18 @@ class LifecycleController:
     def record_allocation(self, model: str, result: str) -> None:
         key = (model, result)
         self.allocation_results[key] = self.allocation_results.get(key, 0) + 1
+
+    def record_reload_result(self, model: str, result: dict[str, Any]) -> None:
+        state = str(result.get("state") or "unknown")
+        reason = str(result.get("reason") or state)
+        key = (model, state, reason)
+        self.reload_results[key] = self.reload_results.get(key, 0) + 1
+
+    def record_live_reconciliation(self, model: str, state: str) -> None:
+        key = (model, state)
+        self.live_reconciliation_results[key] = (
+            self.live_reconciliation_results.get(key, 0) + 1
+        )
 
     def start_instance(
         self,

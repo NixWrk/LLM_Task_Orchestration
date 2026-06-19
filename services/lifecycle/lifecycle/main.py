@@ -165,6 +165,14 @@ async def metrics() -> Response:
         labels = prom_labels(model=model, result=result)
         lines.append(f"llm_allocations_total{{{labels}}} {count}")
 
+    for (model, result, reason), count in sorted(controller.reload_results.items()):
+        labels = prom_labels(model=model, result=result, reason=reason)
+        lines.append(f"llm_reloads_total{{{labels}}} {count}")
+
+    for (model, state), count in sorted(controller.live_reconciliation_results.items()):
+        labels = prom_labels(model=model, state=state)
+        lines.append(f"llm_lmstudio_reconciliations_total{{{labels}}} {count}")
+
     try:
         for gpu in await controller.gpu_states():
             labels = prom_labels(gpu_id=gpu.id, gpu_index=gpu.index, name=gpu.name)
