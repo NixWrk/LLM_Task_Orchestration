@@ -370,23 +370,32 @@ MCP is best for agents, IDE automation, and workflow systems that need to ask fo
 
 Recommended order:
 
-1. Stabilize HTTP allocation API.
-2. Add Python client package.
-3. Add `llmoctl` CLI.
-4. Add MCP server as an adapter over the same client package.
+1. Done: stabilize the HTTP allocation and lifecycle APIs.
+2. Done: add the Python client package.
+3. Done: add `llmoctl` CLI.
+4. Next: add an MCP server as an adapter over the same client package if agent
+   workflows need it.
 
 ## Implemented Low-Level API
 
-The full task-aware allocation object in this document is still the target contract. The repository currently implements these lower-level building blocks:
+The full task-aware allocation object in this document remains the long-form
+resource contract. The repository currently implements these production
+building blocks:
 
-- `/plan`
-- `/reconcile`
-- `/cleanup`
-- `/allocations`
-- `/registry`
-- `/registry/{instance_id}/lease`
-- `/registry/{instance_id}/lease` release via `DELETE`
-- OpenAI-compatible `/v1/...` queue proxy endpoints
+- Lifecycle `POST /plan`
+- Lifecycle `POST /explain-plan`
+- Lifecycle `POST /reconcile`
+- Lifecycle `POST /cleanup`
+- Lifecycle `POST /allocations`
+- Lifecycle `GET /registry`
+- Queue proxy `POST /tasks/queue`
+- Queue proxy `GET /tasks`
+- Queue proxy `GET /tasks/{task_id}`
+- Queue proxy `DELETE /tasks/{task_id}`
+- Queue proxy `GET /tasks/explain`
+- Queue proxy `/v1/...` OpenAI-compatible inference routes
+- Lifecycle `POST /registry/{instance_id}/lease`
+- Lifecycle `DELETE /registry/{instance_id}/lease`
 
 The next implementation step is to add persistent allocation IDs and service/task ownership on top of the implemented dynamic model allocation path.
 

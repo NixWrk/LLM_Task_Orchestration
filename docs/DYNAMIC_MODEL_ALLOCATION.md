@@ -291,5 +291,11 @@ Content-Type: application/json
 
 Prometheus metrics are exposed by both queue proxy and lifecycle:
 
-- Queue proxy `:4100/metrics`: `llm_queue_length`, `llm_active_requests`, request/error/latency/token-budget counters.
-- Lifecycle `:4300/metrics`: `llm_backend_instances`, `llm_backend_active_requests`, `llm_backend_reserved_vram_mb`, `llm_allocations_total`, `llm_gpu_memory_total_mb`, `llm_gpu_memory_used_mb`, `llm_gpu_memory_free_mb`, `llm_gpu_inventory_up`.
+- Queue proxy `:4100/metrics`: `llm_queue_length`, `llm_active_requests`,
+  request/error/latency/token-budget counters, durable task state/event/error
+  counters, queue wait duration, and execution duration.
+- Lifecycle `:4300/metrics`: `llm_backend_instances`,
+  `llm_backend_active_requests`, `llm_backend_reserved_vram_mb`,
+  `llm_allocations_total`, `llm_reloads_total`,
+  `llm_lmstudio_reconciliations_total`, GPU memory gauges, and
+  `llm_gpu_inventory_up`.

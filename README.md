@@ -6,13 +6,13 @@ The goal is to make one controlled entry point for all internal LLM traffic:
 
 - Queue proxy is the public API endpoint for internal services.
 - Queue proxy controls per-model concurrency, queue size, queue timeout, and token budget.
-- Queue proxy can route through the lifecycle backend registry when ready backend instances exist.
+- Queue proxy accepts durable task queues, executes stored OpenAI-compatible payloads, and can route through the lifecycle backend registry.
 - LiteLLM handles OpenAI-compatible routing and provider abstraction.
 - LM Studio runs locally on the host and serves the model for the first backend.
 - Postgres and Redis are available for LiteLLM state.
 - Healthcheck verifies LM Studio and the full queue proxy -> LiteLLM -> backend path.
 - GPU inventory exposes GPU/VRAM state for scheduling.
-- Lifecycle service calculates dry-run model placement and backend registry state.
+- Lifecycle service plans GPU placement, starts/warms/stops owned backends, reconciles live LM Studio state, and explains placement/reload decisions.
 - Prometheus and Grafana are wired for service metrics.
 
 The first backend is LM Studio because it is convenient locally. For heavier multi-GPU serving, the intended migration path is to keep this orchestrator and replace or extend the backend with vLLM/SGLang instances.
@@ -25,7 +25,9 @@ Service A / Service B / OpenAI SDK compatible client
       -> per-model token budget
       -> per-model queue
       -> per-model active request limiter
-      -> LiteLLM Proxy :4000
+      -> optional durable task store/executor
+      -> Lifecycle registry/allocation :4300
+      -> ready backend or LiteLLM Proxy :4000
           -> LM Studio OpenAI-compatible API on the host :1234
           -> Postgres
           -> Redis
@@ -107,7 +109,7 @@ $env:LMS_BINARY="C:\Users\<you>\.lmstudio\bin\lms.exe"
 python services\lms_bridge\lms_bridge.py --port 4399
 ```
 
-`docker-compose.yml` mounts `services/lms_bridge/lms-shim` as the container's `/usr/local/bin/lms`, sets `LMS_BRIDGE_URL=http://host.docker.internal:4399`, and defaults `LIFECYCLE_DRY_RUN=false`. The lifecycle load logic is unchanged — it still runs `lms load --context-length <N> --parallel <M>`; the shim transparently executes it on the host, so a cold allocation loads with the configured context (verified at 32768/parallel 2 for `zotero-html-translate`). The bridge only allows whitelisted `lms` subcommands.
+`docker-compose.yml` mounts `services/lms_bridge/lms-shim` as the container's `/usr/local/bin/lms`, sets `LMS_BRIDGE_URL=http://host.docker.internal:4399`, and defaults `LIFECYCLE_DRY_RUN=false`. The lifecycle load logic is unchanged: it still runs `lms load --context-length <N> --parallel <M>`; the shim transparently executes it on the host, so a cold allocation loads with the configured context (verified at 32768/parallel 2 for `zotero-html-translate`). The bridge only allows whitelisted `lms` subcommands.
 
 To discover already downloaded models:
 
@@ -210,9 +212,17 @@ For a request to `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, or 
 6. Rejects too-large input or total token budget with `413`.
 7. Admits the request into the per-model queue.
 8. Rejects queue overflow or queue timeout with `429`.
-9. Forwards the request to LiteLLM.
+9. Resolves a ready backend through lifecycle when registry routing is enabled.
+10. Falls back to the configured LiteLLM upstream when policy allows fallback.
 
 This gives immediate protection when several internal services call the same local model at the same time.
+
+For long-running batch work, clients should prefer `POST /tasks/queue`. Queue
+proxy stores tenant-scoped tasks, renders employer-owned payload templates,
+claims work fairly between employer groups, records results/errors, and asks
+lifecycle to reconcile capacity from the queue's context plan. When the durable
+queue becomes empty, queue proxy schedules a delayed reconcile so lifecycle can
+unload owned idle LM Studio models after the configured TTL.
 
 ## GPU Control Plane
 

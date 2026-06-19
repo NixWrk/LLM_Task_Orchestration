@@ -52,10 +52,10 @@ Implemented:
 
 Important gap:
 
-The orchestrator has a working task-driven loop, but production operation still
-needs stronger VRAM planning, broader operational metrics, operator CLI
-commands, real Postgres integration tests, and the first Zotero worker
-integration.
+The orchestrator has a working task-driven loop. Remaining production work is
+mostly operational hardening outside the core loop: formal Postgres migrations,
+real Postgres multi-worker integration tests, dashboards/structured logs, and
+the first external worker migration to executable task payloads.
 
 ## Confirmed Product Decisions
 
@@ -512,7 +512,7 @@ Reason: local `lms load --estimate-only` reports about `25.46 GiB` for
 `p6_google_gemma-4-26b-a4b@q6_k` at `context=32768`, while current config
 reserves only `20 + 1 GiB`.
 
-## Suggested Implementation Order
+## Historical Implementation Order
 
 1. Durable `TaskStore`.
 2. Shared typed `ContextPlan`.

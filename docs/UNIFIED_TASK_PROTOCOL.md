@@ -87,28 +87,32 @@ The request shape is:
 
 ### Durable Tasks
 
-Current queue-submission path:
+Implemented queue-submission path:
 
 ```http
 POST http://localhost:4100/tasks/queue
 ```
 
 This accepts a batch of tenant-scoped tasks, records them in the task store, and
-asks lifecycle to reconcile capacity from the resulting per-model queue lengths.
-It is the first implemented step toward durable task execution.
+asks lifecycle to reconcile capacity from the resulting per-model queue lengths
+and context plans. When `TASK_EXECUTOR_ENABLED=true`, queue proxy also claims
+queued tasks, routes their stored OpenAI-compatible payloads through the
+orchestrator, records results/errors, and applies retry policy.
 
-Target path, not implemented yet:
+Implemented status/control paths:
 
 ```http
-POST http://localhost:4100/tasks
+GET http://localhost:4100/tasks?tenant=<tenant>
 GET http://localhost:4100/tasks/{task_id}
 DELETE http://localhost:4100/tasks/{task_id}
+GET http://localhost:4100/tasks/explain?tenant=<tenant>
 ```
 
-Durable tasks will accept the same envelope, persist queue state, support
-idempotency across restarts, expose queue position, and let clients poll instead
-of holding a long HTTP request open. The synchronous `/v1/...` contract remains
-valid after durable tasks are added.
+Durable tasks persist queue state, support idempotency across restarts, expose
+tenant-scoped status, and let clients poll instead of holding a long HTTP
+request open. The synchronous `/v1/...` contract remains valid. A shorter
+canonical `POST /tasks` alias may be added later, but current clients should use
+`POST /tasks/queue`.
 
 Durable tasks are tenant-scoped. Tasks from different tenants must not share task
 ids, idempotency records, status listings, quotas, or priority accounting.
@@ -693,9 +697,11 @@ Stable error types:
 | `client_disconnected` | Client disconnected before completion. |
 | `allocation_expired` | Durable allocation or task exceeded TTL. |
 
-## Durable Task Target
+## Durable Task Execution
 
-Future `POST /tasks` should accept:
+Durable queue admission accepts a batch shape with common orchestration metadata
+plus per-task payloads or template variables. A single executable task payload
+has this shape after admission/rendering:
 
 ```json
 {
@@ -731,7 +737,7 @@ submitted/queued/running -> cancelling -> cancelled
 queued/running -> expired
 ```
 
-`GET /tasks/{task_id}` should return:
+`GET /tasks/{task_id}` returns:
 
 1. task identity and state;
 2. queue position and timing;
@@ -904,8 +910,8 @@ Implemented now:
 12. Idle cleanup for dynamic LM Studio allocations.
 13. LM Studio CLI inspection/estimate parsing for `lms ps --json` and
    `lms load --estimate-only`.
-14. Initial graceful reload state machine: drain active loads, reload idle owned
-   loads, and skip unowned/pre-existing LM Studio loads.
+14. Graceful reload behavior: drain active loads, reload idle owned loads, and
+   skip unowned/pre-existing LM Studio loads.
 15. Tenant-scoped task status APIs:
    `GET /tasks`, `GET /tasks/{task_id}`, and `DELETE /tasks/{task_id}`.
 16. Optional durable task executor enabled by `TASK_EXECUTOR_ENABLED`; it claims
