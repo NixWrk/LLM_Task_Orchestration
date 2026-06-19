@@ -10,6 +10,7 @@ from queue_proxy.policy import (
     apply_orchestration_overrides,
     apply_token_policy,
     extract_model,
+    validate_orchestration_contract,
 )
 
 
@@ -42,8 +43,10 @@ class RequestPreparationService:
         if not isinstance(raw_payload, dict):
             raise PolicyError("JSON request body must be an object.", "invalid_json")
 
+        orchestration = raw_payload.get("orchestration")
+        validate_orchestration_contract(orchestration)
         policy = self.policy_registry.resolve(extract_model(raw_payload))
-        policy = apply_orchestration_overrides(policy, raw_payload.get("orchestration"))
+        policy = apply_orchestration_overrides(policy, orchestration)
         payload = apply_token_policy(raw_payload, policy)
         metadata = dict(payload.get("_orchestrator") or {})
         return payload, metadata, policy

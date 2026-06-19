@@ -4,6 +4,7 @@ import pytest
 
 from queue_proxy.policy import (
     ModelPolicy,
+    PolicyError,
     PolicyRegistry,
     TokenBudgetExceeded,
     apply_orchestration_overrides,
@@ -11,6 +12,7 @@ from queue_proxy.policy import (
     extract_model,
     load_policy_registry,
     strip_internal_fields,
+    validate_orchestration_contract,
 )
 
 
@@ -100,6 +102,69 @@ def test_apply_orchestration_overrides_can_lower_request_limits() -> None:
     assert resolved.max_active_requests == 1
     assert resolved.max_queued_requests == 1
     assert resolved.max_output_tokens == 32
+
+
+def test_validate_orchestration_contract_accepts_strict_v1_envelope() -> None:
+    validate_orchestration_contract(
+        {
+            "schema_version": "llmo.task.v1",
+            "tenant": "elvis",
+            "project": "zotero",
+            "service": "worker",
+            "task": "html_translate",
+            "job_id": "job-1",
+            "priority": "batch",
+            "gpu": ["gpu0", "gpu1"],
+            "max_parallel": 1,
+            "tokens": {"max_output_tokens": 128},
+            "artifacts": {"input_ref": "file:///tmp/input.html"},
+            "labels": {"domain": "scientific_html"},
+        }
+    )
+
+
+def test_validate_orchestration_contract_rejects_malformed_v1_envelope() -> None:
+    with pytest.raises(PolicyError, match="orchestration.tenant"):
+        validate_orchestration_contract(
+            {
+                "schema_version": "llmo.task.v1",
+                "project": "zotero",
+                "service": "worker",
+                "task": "html_translate",
+                "job_id": "job-1",
+                "priority": "batch",
+            }
+        )
+
+    with pytest.raises(PolicyError, match="Unsupported orchestration.schema_version"):
+        validate_orchestration_contract({"schema_version": "llmo.task.v2"})
+
+    with pytest.raises(PolicyError, match="orchestration.priority"):
+        validate_orchestration_contract(
+            {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "worker",
+                "task": "html_translate",
+                "job_id": "job-1",
+                "priority": "right-now",
+            }
+        )
+
+    with pytest.raises(PolicyError, match="orchestration.max_parallel"):
+        validate_orchestration_contract(
+            {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "worker",
+                "task": "html_translate",
+                "job_id": "job-1",
+                "priority": "batch",
+                "max_parallel": 0,
+            }
+        )
 
 
 def test_repository_zotero_html_translate_policy_allows_two_active_requests() -> None:

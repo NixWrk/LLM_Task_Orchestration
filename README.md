@@ -370,6 +370,7 @@ Implemented now:
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Lifecycle support for already-running LM Studio/OpenAI-compatible backends.
 - Dynamic model allocation from request payloads through lifecycle `POST /allocations`.
+- Strict validation for declared `llmo.task.v1` orchestration envelopes.
 - LM Studio dynamic loading/unloading through `lms load/unload` when the CLI is available.
 - LM Studio VRAM auto-estimation from `lms ls --json` metadata.
 - `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, durable task status/cancel, plan explanation, cleanup, and metrics.

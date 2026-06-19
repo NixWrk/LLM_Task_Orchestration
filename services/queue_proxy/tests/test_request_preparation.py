@@ -40,6 +40,21 @@ def test_request_preparer_rejects_invalid_json() -> None:
         )
 
 
+def test_request_preparer_rejects_malformed_v1_orchestration() -> None:
+    with pytest.raises(PolicyError) as exc:
+        RequestPreparationService(policy_registry()).prepare(
+            "chat/completions",
+            "POST",
+            {"content-type": "application/json"},
+            (
+                b'{"model":"local-main","messages":[{"role":"user","content":"hello"}],'
+                b'"orchestration":{"schema_version":"llmo.task.v1","priority":"batch"}}'
+            ),
+        )
+
+    assert exc.value.error_type == "invalid_task_protocol"
+
+
 def test_should_stream_response_requires_explicit_true() -> None:
     assert should_stream_response({"stream": True}) is True
     assert should_stream_response({"stream": False}) is False

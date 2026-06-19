@@ -935,17 +935,19 @@ Implemented now:
     for current tenant queues or supplied plan JSON.
 27. Postgres task store startup records and checks `task_store_schema_version`
     in `llmo_schema_metadata`.
+28. Synchronous `/v1/...` request preparation validates declared
+    `schema_version: llmo.task.v1` envelopes and rejects malformed identity,
+    priority, token/resource hint, artifact, label, and GPU fields as
+    `invalid_task_protocol`.
 
 Needed next:
 
-1. Schema validation for `llmo.task.v1`.
-2. Strict rejection for malformed v1 requests.
-3. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
+1. Expanded metrics/log labels from task metadata for lifecycle, reloads, GPU
    placement, and backend ownership.
-4. Formal Postgres migration tooling and real-container integration tests.
-5. Task execution logs and richer operator-facing task status history.
-6. Zotero HTML queue submission with employer-provided payloads/prompts and
+2. Formal Postgres migration tooling and real-container integration tests.
+3. Task execution logs and richer operator-facing task status history.
+4. Zotero HTML queue submission with employer-provided payloads/prompts and
    artifact references.
-7. Allocation ids and task ownership in lifecycle.
-8. External GPU reservation API for non-LLM consumers such as OCR.
-9. More Python client helpers that build the canonical envelope.
+5. Allocation ids and task ownership in lifecycle.
+6. External GPU reservation API for non-LLM consumers such as OCR.
+7. More Python client helpers that build the canonical envelope.

@@ -43,6 +43,9 @@ Implemented:
    backend instances.
 8. LM Studio can be controlled through `lms load` and `lms unload` when the CLI
    is available.
+9. Synchronous `/v1/...` requests that declare `schema_version: llmo.task.v1`
+   are rejected when required identity fields, priority, or resource hints are
+   malformed.
 
 Important gap:
 
@@ -190,8 +193,8 @@ Status:
 3. Done: start decisions include the planned LM Studio shape.
 4. Done: ready LM Studio backends with too-small context/parallel return a
    `reload` decision instead of silently reusing the load.
-5. Next: execute reload through a graceful drain/unload/load/warmup state
-   machine.
+5. Done: reload decisions are executed through the graceful reload behavior
+   described in Phase 5.
 
 ### Tasks
 

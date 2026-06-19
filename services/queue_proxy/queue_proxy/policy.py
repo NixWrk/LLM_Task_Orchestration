@@ -22,6 +22,45 @@ class TokenBudgetExceeded(PolicyError):
         super().__init__(message, "token_budget_exceeded")
 
 
+TASK_PROTOCOL_VERSION = "llmo.task.v1"
+TASK_PROTOCOL_REQUIRED_FIELDS = (
+    "tenant",
+    "project",
+    "service",
+    "task",
+    "job_id",
+    "priority",
+)
+TASK_PROTOCOL_PRIORITIES = {
+    "interactive",
+    "foreground",
+    "batch",
+    "maintenance",
+}
+TASK_PROTOCOL_POSITIVE_INT_FIELDS = {
+    "max_parallel",
+    "max_active_requests",
+    "max_queued_requests",
+    "startup_timeout_seconds",
+    "idle_ttl_seconds",
+    "ttl_seconds",
+    "lms_context_length",
+    "lms_parallel",
+    "lms_ttl_seconds",
+}
+TASK_PROTOCOL_NON_NEGATIVE_NUMBER_FIELDS = {
+    "estimated_vram_gb",
+    "safety_margin_gb",
+    "queue_timeout_seconds",
+}
+TASK_PROTOCOL_TOKEN_FIELDS = {
+    "default_max_output_tokens",
+    "max_input_tokens",
+    "max_output_tokens",
+    "max_total_tokens",
+}
+
+
 @dataclass(frozen=True)
 class ModelPolicy:
     public_name: str
@@ -264,6 +303,106 @@ def apply_orchestration_overrides(
         policy.max_total_tokens,
     )
     return replace(policy, **changes) if changes else policy
+
+
+def validate_orchestration_contract(orchestration: Any) -> None:
+    if not isinstance(orchestration, dict):
+        return
+    schema_version = orchestration.get("schema_version")
+    if schema_version is None:
+        return
+    if schema_version != TASK_PROTOCOL_VERSION:
+        raise PolicyError(
+            f"Unsupported orchestration.schema_version: {schema_version!r}.",
+            "invalid_task_protocol",
+        )
+
+    for field in TASK_PROTOCOL_REQUIRED_FIELDS:
+        if not non_empty_string(orchestration.get(field)):
+            raise PolicyError(
+                f"orchestration.{field} is required for {TASK_PROTOCOL_VERSION}.",
+                "invalid_task_protocol",
+            )
+
+    priority = str(orchestration["priority"])
+    if priority not in TASK_PROTOCOL_PRIORITIES:
+        raise PolicyError(
+            f"orchestration.priority must be one of {sorted(TASK_PROTOCOL_PRIORITIES)}.",
+            "invalid_task_protocol",
+        )
+
+    for field in ("tokens", "artifacts", "labels"):
+        value = orchestration.get(field)
+        if value is not None and not isinstance(value, dict):
+            raise PolicyError(
+                f"orchestration.{field} must be an object.",
+                "invalid_task_protocol",
+            )
+
+    for field in TASK_PROTOCOL_POSITIVE_INT_FIELDS:
+        value = orchestration.get(field)
+        if value is not None and parse_positive_int(value) is None:
+            raise PolicyError(
+                f"orchestration.{field} must be a positive integer.",
+                "invalid_task_protocol",
+            )
+
+    for field in TASK_PROTOCOL_NON_NEGATIVE_NUMBER_FIELDS:
+        value = orchestration.get(field)
+        if value is not None and parse_non_negative_number(value) is None:
+            raise PolicyError(
+                f"orchestration.{field} must be a non-negative number.",
+                "invalid_task_protocol",
+            )
+
+    tokens = orchestration.get("tokens")
+    if isinstance(tokens, dict):
+        for field in TASK_PROTOCOL_TOKEN_FIELDS:
+            value = tokens.get(field)
+            if value is not None and parse_positive_int(value) is None:
+                raise PolicyError(
+                    f"orchestration.tokens.{field} must be a positive integer.",
+                    "invalid_task_protocol",
+                )
+
+    gpu = orchestration.get("gpu")
+    if gpu is not None and not valid_gpu_hint(gpu):
+        raise PolicyError(
+            "orchestration.gpu must be a string or an array of strings.",
+            "invalid_task_protocol",
+        )
+
+
+def non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def parse_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def parse_non_negative_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def valid_gpu_hint(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return all(non_empty_string(item) for item in value)
+    return False
 
 
 def strip_internal_fields(payload: dict[str, Any]) -> dict[str, Any]:
