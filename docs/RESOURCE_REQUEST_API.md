@@ -16,6 +16,10 @@ Today the implemented API is split across two services.
 
 For the concrete request format now supported by queue proxy and lifecycle `POST /allocations`, see [Dynamic Model Allocation](DYNAMIC_MODEL_ALLOCATION.md).
 
+For the canonical cross-project request envelope, concurrency semantics, future
+persistent task queue, and OCR GPU coordination rules, see
+[Unified Task Contract Plan](UNIFIED_TASK_CONTRACT_PLAN.md).
+
 ### 1. Ask Lifecycle To Plan Or Reconcile
 
 Lifecycle can plan or create dry-run backend instances based on queue pressure:

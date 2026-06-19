@@ -55,6 +55,8 @@ For a repeatable local preparation run that installs Python dependencies, pulls 
 
 If you already have models downloaded in LM Studio, use [LM Studio Models](docs/LM_STUDIO_MODELS.md) to discover model ids and map them into the orchestrator.
 
+All callers should use the same cross-project request envelope and concurrency semantics described in [Unified Task Contract Plan](docs/UNIFIED_TASK_CONTRACT_PLAN.md).
+
 Applications can request any allowed LM Studio model dynamically through the queue proxy; see [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
 
 Dynamic smoke test:
