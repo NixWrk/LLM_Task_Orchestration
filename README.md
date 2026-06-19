@@ -97,7 +97,17 @@ lms load <model-key> --identifier local-main
 
 Use the model identifier you load as `LMSTUDIO_MODEL_ID`.
 
-Dynamic LM Studio profiles can also let lifecycle call `lms load <model-key> --identifier <model-key> --yes` and `lms unload <model-key>` automatically. This works when lifecycle runs where the `lms` CLI is available. In Docker on Windows, the Linux lifecycle container normally cannot execute the host `lms.exe`, so the default `cli-if-available` strategy falls back to using already reachable LM Studio API models.
+Dynamic LM Studio profiles can also let lifecycle call `lms load <model-key> --identifier <model-key> --yes` and `lms unload <model-key>` automatically. This works when lifecycle runs where the `lms` CLI is available.
+
+In Docker on Windows the Linux lifecycle container cannot execute the host `lms.exe` directly (it is host-bound and has no `--host` option). Without help, `cli-if-available` falls back to already reachable LM Studio API models, and LM Studio then JIT-loads at its default context (e.g. 4096), ignoring the profile's `lms_context_length`. To make lifecycle load with the profile context, run the host **lms bridge** and let the container shim forward `lms ...` calls to it:
+
+```powershell
+# On the host (keep running; add to Task Scheduler at logon for persistence):
+$env:LMS_BINARY="C:\Users\<you>\.lmstudio\bin\lms.exe"
+python services\lms_bridge\lms_bridge.py --port 4399
+```
+
+`docker-compose.yml` mounts `services/lms_bridge/lms-shim` as the container's `/usr/local/bin/lms`, sets `LMS_BRIDGE_URL=http://host.docker.internal:4399`, and defaults `LIFECYCLE_DRY_RUN=false`. The lifecycle load logic is unchanged — it still runs `lms load --context-length <N> --parallel <M>`; the shim transparently executes it on the host, so a cold allocation loads with the configured context (verified at 32768/parallel 2 for `zotero-html-translate`). The bridge only allows whitelisted `lms` subcommands.
 
 To discover already downloaded models:
 
@@ -359,20 +369,23 @@ docker compose --profile test up -d --build fake-backend
 
 Implemented now:
 
-- Phase 1 compose and LiteLLM configuration.
-- Queue proxy for per-model concurrency, queueing, and token budget enforcement.
+- Compose and LiteLLM configuration.
+- Queue proxy for per-model concurrency, queueing, token budget enforcement, and strict `llmo.task.v1` validation.
+- Durable task queue admission through `POST /tasks/queue`, tenant-scoped task status/cancel APIs, and optional in-process task execution.
+- Employer-provided `payload_template` rendering for durable tasks.
+- Equal-priority fair task claiming across `(tenant, project, service, task, priority, model)` groups.
 - Fake OpenAI-compatible backend for integration tests.
 - Integration tests for non-streaming, streaming, token rejection, queue overflow, queue timeout, and upstream failure.
 - GPU inventory service with `nvidia-smi` parser and fake inventory mode.
-- Lifecycle dry-run scheduler with backend registry and VRAM-aware placement.
+- Lifecycle scheduler with backend registry, VRAM-aware placement, context-plan driven LM Studio shape selection, and plan explanation.
 - Registry-aware queue proxy routing.
 - Active request lease/release accounting between queue proxy and lifecycle registry.
 - Lifecycle runtime adapter framework with Docker vLLM command generation.
 - Lifecycle support for already-running LM Studio/OpenAI-compatible backends.
 - Dynamic model allocation from request payloads through lifecycle `POST /allocations`.
-- Strict validation for declared `llmo.task.v1` orchestration envelopes.
 - LM Studio dynamic loading/unloading through `lms load/unload` when the CLI is available.
 - LM Studio VRAM auto-estimation from `lms ls --json` metadata.
+- LM Studio live-state reconciliation, external-load reservation, reload hysteresis, and idle unload after empty queues.
 - `llmoctl` CLI for model catalog, registry, allocation, chat, embeddings, durable task status/cancel, plan explanation, cleanup, and metrics.
 - Postgres durable task store with startup schema version checks.
 - Prometheus metrics for lifecycle GPU/model/allocation/reload state and queue proxy queue/request state.
@@ -385,7 +398,9 @@ Implemented now:
 
 Next phases:
 
-- A concrete real model profile for the server's selected local model weights.
+- Formal Postgres migration tooling and real-container multi-worker tests.
+- Dashboards and richer structured task/reload logs.
+- Zotero worker-side migration to submit executable payloads/templates.
 - Optional SGLang runtime adapter.
 - Additional compatibility coverage for Responses API edge cases and provider-specific
   backend failures.
