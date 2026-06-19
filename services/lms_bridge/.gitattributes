@@ -1,0 +1,4 @@
+# The container shim and bridge run on Linux; force LF so the shebang and
+# mounted /usr/local/bin/lms stay executable regardless of host autocrlf.
+lms-shim text eol=lf
+lms_bridge.py text eol=lf

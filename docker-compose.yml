@@ -140,14 +140,19 @@ services:
       LIFECYCLE_CONFIG_PATH: /app/config/orchestrator.yaml
       BACKEND_REGISTRY_PATH: /app/state/backend_registry.json
       GPU_INVENTORY_URL: http://gpu-inventory:4200
-      LIFECYCLE_DRY_RUN: ${LIFECYCLE_DRY_RUN:-true}
+      LIFECYCLE_DRY_RUN: ${LIFECYCLE_DRY_RUN:-false}
       LIFECYCLE_ENABLE_RECONCILE_LOOP: ${LIFECYCLE_ENABLE_RECONCILE_LOOP:-false}
       LIFECYCLE_RECONCILE_INTERVAL_SECONDS: ${LIFECYCLE_RECONCILE_INTERVAL_SECONDS:-15}
       LIFECYCLE_DOCKER_BINARY: ${LIFECYCLE_DOCKER_BINARY:-docker}
+      # lms is a host-bound binary; the in-container /usr/local/bin/lms shim
+      # forwards `lms ...` to the host bridge so lifecycle can actually load
+      # LM Studio models with the profile's context length.
+      LMS_BRIDGE_URL: ${LMS_BRIDGE_URL:-http://host.docker.internal:4399}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./config/orchestrator.yaml:/app/config/orchestrator.yaml:ro
+      - ./services/lms_bridge/lms-shim:/usr/local/bin/lms:ro
       - lifecycle_state:/app/state
       - /var/run/docker.sock:/var/run/docker.sock
     ports:

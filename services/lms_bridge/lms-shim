@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""In-container `lms` shim: forward `lms ...` to the host lms bridge.
+
+Mounted into the lifecycle container as /usr/local/bin/lms so that the
+orchestrator's unchanged `subprocess.run(["lms", ...])` calls transparently
+execute the real `lms` binary on the host. Passes stdout/stderr/exit code
+straight through, so the lifecycle adapter's output parsing and
+"identifier already exists" detection keep working.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.request
+
+BRIDGE_URL = os.environ.get("LMS_BRIDGE_URL", "http://host.docker.internal:4399").rstrip("/")
+# Generous: model loads can take well over a minute. Keep above the
+# orchestrator's startup_timeout_seconds.
+TIMEOUT_SECONDS = int(os.environ.get("LMS_BRIDGE_TIMEOUT", "2000"))
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    body = json.dumps({"args": args, "timeout": TIMEOUT_SECONDS}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{BRIDGE_URL}/run",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - surface any transport failure like a CLI error
+        sys.stderr.write(f"lms shim: bridge call failed: {exc}\n")
+        return 127
+
+    sys.stdout.write(str(payload.get("stdout") or ""))
+    sys.stderr.write(str(payload.get("stderr") or ""))
+    return int(payload.get("returncode") or 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
