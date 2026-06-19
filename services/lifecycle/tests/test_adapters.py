@@ -4,11 +4,15 @@ from lifecycle.adapters import (
     DockerVllmAdapter,
     DryRunAdapter,
     ExternalOpenAIAdapter,
+    adapter_for,
     docker_vllm_command,
+    estimate_lmstudio_load_vram_mb,
+    lmstudio_estimate_command,
     lmstudio_identifier_already_exists,
     lmstudio_load_command,
     lmstudio_unload_command,
 )
+from lifecycle.lmstudio import parse_estimated_gpu_memory_mb, parse_loaded_models
 from lifecycle.models import EnvironmentVariable, ModelProfile, VolumeMount
 
 
@@ -119,6 +123,23 @@ def test_dry_run_adapter_does_not_generate_vllm_command_for_external_runtime() -
     assert instance.runtime_command == ["dry-run", "external", "qwen"]
 
 
+def test_adapter_for_honors_dry_run_for_lmstudio() -> None:
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "runtime_image": None,
+            "artifact": None,
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli",
+        }
+    )
+
+    adapter = adapter_for(external, dry_run=True, docker_binary="docker")
+
+    assert isinstance(adapter, DryRunAdapter)
+
+
 def test_external_openai_adapter_uses_configured_base_url() -> None:
     external = ModelProfile(
         **{
@@ -169,6 +190,94 @@ def test_lmstudio_load_command_contains_identifier_and_runtime_options() -> None
     assert "--context-length" in command
     assert "--parallel" in command
     assert "--ttl" in command
+
+
+def test_lmstudio_estimate_command_uses_same_load_shape() -> None:
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli",
+            "lms_binary": "lms",
+            "lms_gpu": "max",
+            "lms_context_length": 32768,
+            "lms_parallel": 2,
+        }
+    )
+
+    command = lmstudio_estimate_command(external)
+
+    assert command[:3] == ["lms", "load", "qwen"]
+    assert "--context-length" in command
+    assert "--parallel" in command
+    assert command[-1] == "--estimate-only"
+
+
+def test_parse_lmstudio_ps_json_load_shape() -> None:
+    loads = parse_loaded_models(
+        [
+            {
+                "identifier": "qwen",
+                "modelKey": "qwen/qwen3.5-9b",
+                "status": "loaded",
+                "contextLength": "32\u00a0768",
+                "parallel": 2,
+                "gpu": "max",
+                "ttlSeconds": 3600,
+            }
+        ]
+    )
+
+    assert loads[0].identifier == "qwen"
+    assert loads[0].model_key == "qwen/qwen3.5-9b"
+    assert loads[0].context_length == 32768
+    assert loads[0].parallel == 2
+    assert loads[0].gpu == "max"
+    assert loads[0].ttl_seconds == 3600
+
+
+def test_parse_lmstudio_estimate_output() -> None:
+    output = "\n".join(
+        [
+            "Model: p6_google_gemma-4-26b-a4b@q6_k",
+            "Context Length: 32\u00a0768",
+            "Estimated GPU Memory:   25.46 GiB",
+        ]
+    )
+
+    assert parse_estimated_gpu_memory_mb(output) == 26072
+
+
+def test_estimate_lmstudio_load_vram_mb_parses_cli_output(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Estimated GPU Memory: 25.46 GiB",
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    external = ModelProfile(
+        **{
+            **profile().__dict__,
+            "runtime": "lmstudio",
+            "base_url": "http://host.docker.internal:1234/v1",
+            "load_strategy": "cli",
+            "lms_binary": "lms",
+            "lms_context_length": 32768,
+            "lms_parallel": 2,
+        }
+    )
+
+    estimate = estimate_lmstudio_load_vram_mb(external)
+
+    assert estimate == 26072
+    assert calls[0][-1] == "--estimate-only"
 
 
 def test_lmstudio_unload_command_uses_loaded_identifier() -> None:

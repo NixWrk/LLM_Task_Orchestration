@@ -197,6 +197,16 @@ Status:
 
 Add an adapter that can inspect and manage the current LM Studio load safely.
 
+Status:
+
+1. Done: `lms ps --json` parser for loaded model identifier, model key,
+   context, parallel, GPU, TTL, and raw metadata.
+2. Done: `lms load --estimate-only` command builder and GPU-memory parser.
+3. Done: lifecycle records planned LM Studio shape in backend registry metadata.
+4. Done: dry-run lifecycle no longer calls real LM Studio load/unload commands.
+5. Next: reconcile registry metadata with live `lms ps --json` state on startup
+   and before reload decisions.
+
 ### Tasks
 
 1. Parse `lms ps` into structured state:
@@ -231,6 +241,17 @@ Add an adapter that can inspect and manage the current LM Studio load safely.
 ## Phase 5: Graceful Reload
 
 Implement reload without interrupting active requests.
+
+Status:
+
+1. Done: lifecycle emits `reload` when a ready LM Studio backend is too small
+   for the context plan.
+2. Done: reconcile marks active mismatched backends as `draining` instead of
+   unloading them.
+3. Done: idle lifecycle-owned LM Studio backends reload through
+   stop/start/warmup.
+4. Done: pre-existing/unowned LM Studio loads are not unloaded.
+5. Next: add reload hysteresis and live LM Studio ownership reconciliation.
 
 ### Tasks
 

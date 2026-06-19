@@ -778,6 +778,10 @@ Implemented now:
 11. LM Studio hints such as `lms_gpu`, `lms_context_length`, `lms_parallel`, and
    `lms_ttl_seconds`.
 12. Idle cleanup for dynamic LM Studio allocations.
+13. LM Studio CLI inspection/estimate parsing for `lms ps --json` and
+   `lms load --estimate-only`.
+14. Initial graceful reload state machine: drain active loads, reload idle owned
+   loads, and skip unowned/pre-existing LM Studio loads.
 
 Needed next:
 
@@ -785,7 +789,7 @@ Needed next:
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
 4. Tenant-scoped list/status APIs and production Postgres task store.
-5. Graceful LM Studio reload execution for planned backend-shape changes.
+5. Reload hysteresis and live LM Studio ownership reconciliation.
 6. Allocation ids and task ownership in lifecycle.
 7. External GPU reservation API for non-LLM consumers such as OCR.
 8. Python client helpers that build the canonical envelope.

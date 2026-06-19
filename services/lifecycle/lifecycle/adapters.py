@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from typing import Protocol
 
+from lifecycle.lmstudio import parse_estimated_gpu_memory_mb
 from lifecycle.models import BackendInstance, ModelProfile, now_iso
 
 
@@ -156,10 +157,10 @@ class ExternalOpenAIAdapter:
 
 
 def adapter_for(profile: ModelProfile, dry_run: bool, docker_binary: str) -> RuntimeAdapter:
-    if profile.runtime in {"external", "lmstudio", "openai-compatible"}:
-        return ExternalOpenAIAdapter()
     if dry_run:
         return DryRunAdapter()
+    if profile.runtime in {"external", "lmstudio", "openai-compatible"}:
+        return ExternalOpenAIAdapter()
     if profile.runtime == "vllm":
         return DockerVllmAdapter(docker_binary)
     return DryRunAdapter()
@@ -244,6 +245,21 @@ def lmstudio_load_command(profile: ModelProfile) -> list[str]:
     if profile.lms_ttl_seconds is not None:
         command.extend(["--ttl", str(profile.lms_ttl_seconds)])
     return command
+
+
+def lmstudio_estimate_command(profile: ModelProfile) -> list[str]:
+    return [*lmstudio_load_command(profile), "--estimate-only"]
+
+
+def estimate_lmstudio_load_vram_mb(profile: ModelProfile) -> int | None:
+    completed = subprocess.run(
+        lmstudio_estimate_command(profile),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=profile.startup_timeout_seconds,
+    )
+    return parse_estimated_gpu_memory_mb(completed.stdout)
 
 
 def lmstudio_unload_command(lms_binary: str, identifier: str) -> list[str]:

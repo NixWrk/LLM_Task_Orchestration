@@ -5,7 +5,7 @@ from pathlib import Path
 from lifecycle.models import BackendInstance, now_iso
 from lifecycle.registry_store import JsonFileRegistryStore, RegistryStore
 
-ACTIVE_STATES = {"starting", "warming", "ready"}
+ACTIVE_STATES = {"starting", "warming", "ready", "draining", "stopping"}
 READY_STATES = {"ready"}
 
 

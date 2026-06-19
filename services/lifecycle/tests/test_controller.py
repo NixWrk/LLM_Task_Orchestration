@@ -93,7 +93,7 @@ def test_allocate_dynamic_lmstudio_model_registers_ready_backend(
 
     assert result["created"] is True
     assert result["instance"]["model"] == "qwen/qwen3.5-9b"
-    assert result["instance"]["base_url"] == "http://host.docker.internal:1234/v1"
+    assert result["instance"]["base_url"].startswith("dry-run://qwen/qwen3.5-9b/")
     assert result["instance"]["state"] == "ready"
 
 
@@ -244,6 +244,149 @@ def test_plan_reuses_lmstudio_shape_when_it_already_satisfies_context_plan(
     decision = result["models"][0]["decisions"][0]
     assert decision["action"] == "noop"
     assert decision["reason"] == "desired_replicas_satisfied"
+
+
+def test_reconcile_marks_active_lmstudio_reload_draining(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            active_requests=1,
+            dry_run=True,
+            metadata={
+                "lmstudio_loaded_with_lms": True,
+                "lms_context_length": 8192,
+                "lms_parallel": 1,
+            },
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.reconcile(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    reloaded = result["reloaded_instances"][0]
+    assert reloaded["state"] == "draining"
+    assert reloaded["reason"] == "active_requests_present"
+    assert registry.get("lmstudio-1").state == "draining"
+    assert registry.get("lmstudio-1").active_requests == 1
+
+
+def test_reconcile_reloads_idle_owned_lmstudio_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            dry_run=True,
+            metadata={
+                "lmstudio_loaded_with_lms": True,
+                "lms_context_length": 8192,
+                "lms_parallel": 1,
+            },
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.reconcile(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    reloaded = result["reloaded_instances"][0]
+    assert reloaded["state"] == "reloaded"
+    assert reloaded["stopped_instance"]["state"] == "stopped"
+    assert reloaded["instance"]["state"] == "ready"
+    assert reloaded["instance"]["metadata"]["lms_context_length"] == 16384
+    assert reloaded["instance"]["metadata"]["lms_parallel"] == 2
+    assert registry.get("lmstudio-1").state == "stopped"
+
+
+def test_reconcile_skips_reload_for_unowned_lmstudio_backend(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registry = BackendRegistry(str(tmp_path / "registry.json"))
+    registry.upsert(
+        BackendInstance(
+            instance_id="lmstudio-1",
+            model="local-main",
+            backend_model="local-main",
+            runtime="lmstudio",
+            base_url="http://host.docker.internal:1234/v1",
+            gpu_ids=["gpu0"],
+            state="ready",
+            reserved_vram_mb=9 * 1024,
+            dry_run=False,
+            metadata={
+                "lmstudio_loaded_with_lms": False,
+                "lms_context_length": 8192,
+                "lms_parallel": 1,
+            },
+        )
+    )
+    controller = lifecycle_controller_for_plan(tmp_path, registry=registry)
+
+    async def fake_gpu_states() -> list[GpuState]:
+        return [GpuState("gpu0", 0, "gpu", 24_000, 1_000, 23_000)]
+
+    monkeypatch.setattr(controller, "gpu_states", fake_gpu_states)
+
+    result = asyncio.run(
+        controller.reconcile(
+            {"local-main": 2},
+            context_plan_payload(
+                recommended_context=16384,
+                recommended_parallel=2,
+            ),
+        )
+    )
+
+    reloaded = result["reloaded_instances"][0]
+    assert reloaded["state"] == "skipped"
+    assert reloaded["reason"] == "lmstudio_load_not_owned"
+    assert registry.get("lmstudio-1").state == "ready"
 
 
 def test_allocate_dynamic_model_denied_by_policy(tmp_path: Path) -> None:

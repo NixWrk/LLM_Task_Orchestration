@@ -152,7 +152,7 @@ class LifecycleController:
                 if not decisions and queue_length > 0:
                     reload_decision = reload_decision_for_context_plan(
                         effective_profile,
-                        self.registry.ready_for_model(profile.public_name),
+                        self.registry.active_for_model(profile.public_name),
                         context_plan,
                     )
                     if reload_decision is not None:
@@ -204,6 +204,7 @@ class LifecycleController:
         stopped = await self.stop_idle_instances(profiles, queue_lengths)
         plan = await self.plan(queue_lengths, context_plans)
         created: list[dict[str, Any]] = []
+        reloaded: list[dict[str, Any]] = []
 
         for model_plan in plan["models"]:
             profile = profile_with_context_plan(
@@ -212,6 +213,9 @@ class LifecycleController:
             )
             gpus = {gpu.id: gpu for gpu in await self.gpu_states()}
             for decision_payload in model_plan["decisions"]:
+                if decision_payload["action"] == "reload":
+                    reloaded.append(await self.reload_instance(profile, decision_payload, gpus))
+                    continue
                 if decision_payload["action"] != "start" or not decision_payload["gpu_id"]:
                     continue
                 instance = self.start_instance(profile, decision_payload, gpus)
@@ -220,6 +224,7 @@ class LifecycleController:
                 created.append(instance.to_dict())
 
         plan["created_instances"] = created
+        plan["reloaded_instances"] = reloaded
         plan["stopped_instances"] = stopped
         return plan
 
@@ -294,6 +299,50 @@ class LifecycleController:
     ) -> dict[str, Any]:
         return await self.runtime.stop_instance(profile, instance)
 
+    async def reload_instance(
+        self,
+        profile: ModelProfile,
+        decision_payload: dict[str, Any],
+        gpu_by_id: dict[str, GpuState],
+    ) -> dict[str, Any]:
+        instance_id = str(decision_payload.get("instance_id") or "")
+        if not instance_id:
+            return {"state": "skipped", "reason": "missing_instance_id"}
+
+        instance = self.registry.get(instance_id)
+        if instance.active_requests > 0:
+            draining = (
+                instance
+                if instance.state == "draining"
+                else self.registry.mark_state(instance.instance_id, "draining")
+            )
+            return {
+                "state": "draining",
+                "reason": "active_requests_present",
+                "instance": draining.to_dict(),
+            }
+
+        if (
+            instance.runtime == "lmstudio"
+            and not instance.dry_run
+            and not instance.metadata.get("lmstudio_loaded_with_lms")
+        ):
+            return {
+                "state": "skipped",
+                "reason": "lmstudio_load_not_owned",
+                "instance": instance.to_dict(),
+            }
+
+        stopped = await self.stop_instance(profile, instance)
+        replacement = self.start_instance(profile, decision_payload, gpu_by_id)
+        self.registry.upsert(replacement)
+        replacement = await self.initialize_instance(profile, replacement)
+        return {
+            "state": "reloaded",
+            "stopped_instance": stopped,
+            "instance": replacement.to_dict(),
+        }
+
 
 def desired_backend_shape(profile: ModelProfile) -> dict[str, Any]:
     return {
@@ -325,13 +374,15 @@ def reject_oversized_decision(
 
 def reload_decision_for_context_plan(
     profile: ModelProfile,
-    ready_instances: list[BackendInstance],
+    active_instances: list[BackendInstance],
     context_plan: ContextPlan | None,
 ) -> PlacementDecision | None:
     if context_plan is None or profile.runtime != "lmstudio":
         return None
 
-    for instance in ready_instances:
+    for instance in active_instances:
+        if instance.state not in {"ready", "draining"}:
+            continue
         if backend_satisfies_profile_shape(instance, profile):
             continue
         current_context = lms_context_length_from_instance(instance)
