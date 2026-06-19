@@ -58,9 +58,11 @@ async def reconcile(request: Request) -> dict[str, object]:
     payload = await request.json()
     last_reconcile_payload = payload
     queue_lengths = payload.get("queue_lengths", {})
+    context_plans = payload.get("context_plans", {})
     return {
         "dry_run": True,
         "queue_lengths": queue_lengths,
+        "context_plans": context_plans,
         "models": [
             {
                 "model": model,

@@ -187,7 +187,9 @@ def test_repository_zotero_html_translate_profile_preserves_baseline() -> None:
     assert profile.load_strategy == "cli-if-available"
     assert profile.lms_binary == "lms"
     assert profile.startup_timeout_seconds == 1800
+    assert profile.estimated_vram_mb == 26 * 1024
+    assert profile.safety_margin_mb == 2 * 1024
     assert profile.lms_gpu == "max"
     assert profile.lms_context_length == 32768
-    assert profile.lms_parallel == 1
+    assert profile.lms_parallel == 2
     assert profile.lms_ttl_seconds == 3600

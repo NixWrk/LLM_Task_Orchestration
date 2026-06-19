@@ -57,6 +57,8 @@ If you already have models downloaded in LM Studio, use [LM Studio Models](docs/
 
 All callers must use the strict cross-project request envelope and concurrency semantics described in the [Unified Task Protocol](docs/UNIFIED_TASK_PROTOCOL.md).
 
+The roadmap for durable task queues, context planning, LM Studio shape selection, and graceful reloads is in [Task Context Orchestration Implementation Plan](docs/TASK_CONTEXT_ORCHESTRATION_PLAN.md).
+
 Applications can request any allowed LM Studio model dynamically through the queue proxy; see [Dynamic Model Allocation](docs/DYNAMIC_MODEL_ALLOCATION.md).
 
 Dynamic smoke test:

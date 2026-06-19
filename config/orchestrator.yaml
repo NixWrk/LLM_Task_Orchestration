@@ -83,7 +83,7 @@ models:
     aliases:
       - p6_google_gemma-4-26b-a4b@q6_k
       - gemma4_26b_run
-    max_active_requests: 1
+    max_active_requests: 2
     max_queued_requests: 64
     queue_timeout_seconds: 900
     default_max_output_tokens: 1024
@@ -108,8 +108,8 @@ models:
       warmup_enabled: true
       warmup_prompt: "Return exactly: ok"
       warmup_max_tokens: 8
-      estimated_vram_gb: 20
-      safety_margin_gb: 1
+      estimated_vram_gb: 26
+      safety_margin_gb: 2
       min_replicas: 0
       max_replicas: 1
       idle_ttl_seconds: 900
@@ -117,7 +117,7 @@ models:
       lms_binary: lms
       lms_gpu: max
       lms_context_length: 32768
-      lms_parallel: 1
+      lms_parallel: 2
       lms_ttl_seconds: 3600
       preferred_gpus:
         - auto

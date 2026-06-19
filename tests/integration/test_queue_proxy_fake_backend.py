@@ -307,12 +307,16 @@ def test_task_queue_submission_reconciles_capacity(
                     "gpu": "auto",
                     "lms_gpu": "max",
                     "lms_context_length": 32768,
-                    "max_parallel": 1,
+                    "max_parallel": 4,
                 },
                 "tasks": [
                     {
                         "job_id": "zotero:item:ABCD1234:source-html:ru",
                         "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+                        "tokens": {
+                            "estimated_input_tokens": 5200,
+                            "max_output_tokens": 1200,
+                        },
                         "artifacts": {
                             "input_ref": "file:///data/zotero/ABCD1234/02.en.polish.html",
                             "output_ref": "file:///data/zotero/ABCD1234/03.ru.translate.html",
@@ -321,6 +325,10 @@ def test_task_queue_submission_reconciles_capacity(
                     {
                         "job_id": "zotero:item:EFGH5678:source-html:ru",
                         "idempotency_key": "zotero:item:EFGH5678:source-html:ru:v1",
+                        "tokens": {
+                            "estimated_input_tokens": 9200,
+                            "max_output_tokens": 1800,
+                        },
                         "artifacts": {
                             "input_ref": "file:///data/zotero/EFGH5678/02.en.polish.html",
                             "output_ref": "file:///data/zotero/EFGH5678/03.ru.translate.html",
@@ -336,8 +344,14 @@ def test_task_queue_submission_reconciles_capacity(
     assert body["accepted_tasks"] == 2
     assert body["reused_tasks"] == 0
     assert body["queue_lengths"] == {"local-main": 2}
+    assert body["context_plans"]["local-main"]["recommended_lms_context_length"] == 16384
+    assert body["context_plans"]["local-main"]["recommended_lms_parallel"] == 2
+    assert body["context_plans"]["local-main"]["total_slot_context_tokens"] == 32768
     assert body["capacity"]["state"] == "reconciled"
     assert body["capacity"]["result"]["queue_lengths"] == {"local-main": 2}
+    assert body["capacity"]["result"]["context_plans"]["local-main"] == body[
+        "context_plans"
+    ]["local-main"]
     assert body["capacity"]["result"]["models"][0]["decisions"][0]["gpu_id"] == "gpu0"
 
 

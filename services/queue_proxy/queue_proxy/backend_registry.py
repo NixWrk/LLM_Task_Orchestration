@@ -64,11 +64,18 @@ class BackendRegistryClient:
         parsed = parse_registry_instances({"instances": [instance]})
         return parsed[0] if parsed else None
 
-    async def reconcile(self, queue_lengths: dict[str, int]) -> dict[str, Any]:
+    async def reconcile(
+        self,
+        queue_lengths: dict[str, int],
+        context_plans: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"queue_lengths": queue_lengths}
+        if context_plans is not None:
+            payload["context_plans"] = context_plans
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
                 f"{self.registry_url}/reconcile",
-                json={"queue_lengths": queue_lengths},
+                json=payload,
             )
             response.raise_for_status()
             return response.json()

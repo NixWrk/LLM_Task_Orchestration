@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from queue_proxy.policy import (
@@ -7,6 +9,7 @@ from queue_proxy.policy import (
     apply_orchestration_overrides,
     apply_token_policy,
     extract_model,
+    load_policy_registry,
     strip_internal_fields,
 )
 
@@ -97,3 +100,15 @@ def test_apply_orchestration_overrides_can_lower_request_limits() -> None:
     assert resolved.max_active_requests == 1
     assert resolved.max_queued_requests == 1
     assert resolved.max_output_tokens == 32
+
+
+def test_repository_zotero_html_translate_policy_allows_two_active_requests() -> None:
+    config_path = Path(__file__).resolve().parents[3] / "config" / "orchestrator.yaml"
+
+    policy = load_policy_registry(str(config_path)).resolve("zotero-html-translate")
+
+    assert policy.max_active_requests == 2
+    assert policy.max_queued_requests == 64
+    assert policy.max_input_tokens == 32768
+    assert policy.max_output_tokens == 8192
+    assert policy.max_total_tokens == 40960

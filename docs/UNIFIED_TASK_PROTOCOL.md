@@ -4,6 +4,8 @@ Protocol version: `llmo.task.v1`
 
 Last updated: 2026-06-19
 
+Implementation roadmap: [Task Context Orchestration Implementation Plan](TASK_CONTEXT_ORCHESTRATION_PLAN.md).
+
 ## Purpose
 
 This protocol is the contract between client projects and the local LLM
@@ -130,6 +132,10 @@ Example HTML translation queue:
     {
       "job_id": "zotero:item:ABCD1234:source-html:ru",
       "idempotency_key": "zotero:item:ABCD1234:source-html:ru:v1",
+      "tokens": {
+        "estimated_input_tokens": 5200,
+        "max_output_tokens": 1200
+      },
       "artifacts": {
         "input_ref": "file:///data/zotero/ABCD1234/02.en.polish.html",
         "output_ref": "file:///data/zotero/ABCD1234/03.ru.translate.html"
@@ -138,6 +144,10 @@ Example HTML translation queue:
     {
       "job_id": "zotero:item:EFGH5678:source-html:ru",
       "idempotency_key": "zotero:item:EFGH5678:source-html:ru:v1",
+      "tokens": {
+        "estimated_input_tokens": 9200,
+        "max_output_tokens": 1800
+      },
       "artifacts": {
         "input_ref": "file:///data/zotero/EFGH5678/02.en.polish.html",
         "output_ref": "file:///data/zotero/EFGH5678/03.ru.translate.html"
@@ -156,6 +166,18 @@ Successful response:
   "queue_lengths": {
     "zotero-html-translate": 2
   },
+  "context_plans": {
+    "zotero-html-translate": {
+      "queued_tasks": 2,
+      "max_required_context_tokens": 11000,
+      "recommended_lms_context_length": 16384,
+      "requested_parallel": 4,
+      "recommended_lms_parallel": 2,
+      "total_slot_context_tokens": 32768,
+      "context_cap_tokens": 32768,
+      "oversized_tasks": []
+    }
+  },
   "tasks": [
     {
       "task_id": "task_...",
@@ -168,6 +190,9 @@ Successful response:
       "priority": "batch",
       "model": "zotero-html-translate",
       "endpoint": "/v1/chat/completions",
+      "estimated_input_tokens": 5200,
+      "max_output_tokens": 1200,
+      "required_context_tokens": 6400,
       "state": "queued",
       "reused": false
     }
@@ -196,6 +221,12 @@ Successful response:
 The queue submission endpoint does not make client containers choose GPUs. It
 only reports the queue. Lifecycle calculates desired replicas and GPU placement
 from the queue length, model policy, registry reservations, and GPU inventory.
+
+`context_plans` is the orchestrator's first-pass packing plan. A client may send
+per-task token estimates, but it does not decide slot count or context length.
+The orchestrator rounds each model's maximum required context into a context
+bucket, chooses the requested number of active slots from queue length and policy
+hints, and reports whether any task is too large for the declared context cap.
 
 ## Canonical Request
 
@@ -441,6 +472,48 @@ allocation. The orchestrator should reject:
 
 Body fields are authoritative. Header mismatches should be treated as client
 bugs, not silently corrected.
+
+### Context Planning
+
+Workers describe task size; the orchestrator decides the backend shape.
+
+For every queued task, the orchestrator should know or estimate:
+
+1. input tokens;
+2. output token budget;
+3. required context tokens;
+4. target model/profile;
+5. priority and tenant.
+
+For each model queue, the orchestrator calculates:
+
+1. maximum required context among active queued tasks;
+2. recommended context bucket, such as `8192`, `16384`, or `32768`;
+3. recommended parallel slots from queue length, priority, and policy;
+4. total slot context budget;
+5. tasks that cannot fit inside the declared context cap.
+
+For LM Studio, this maps to `lms_context_length` and `lms_parallel`. The model is
+still loaded once; parallel slots let multiple requests share that load. More
+slots do not mean `model_vram * slots`, but larger context and active generations
+can increase KV/runtime memory and reduce tokens per second.
+
+### Graceful Reload
+
+If the current LM Studio load does not match the queue's context plan, lifecycle
+should use a graceful reload policy:
+
+1. mark the backend `draining`;
+2. stop routing new tasks to that backend;
+3. wait until `active_requests == 0`;
+4. unload the LM Studio identifier only if lifecycle owns that load;
+5. reload with the planned `lms_context_length` and `lms_parallel`;
+6. warm up and mark the backend `ready`;
+7. resume routing queued tasks.
+
+Reload should not happen for every small queue change. Use context buckets,
+minimum dwell time, and hysteresis so the system does not unload/reload the same
+model repeatedly while a batch is arriving.
 
 ### Policy Wins
 

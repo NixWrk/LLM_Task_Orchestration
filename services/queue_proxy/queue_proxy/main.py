@@ -115,7 +115,8 @@ async def submit_task_queue(request: Request) -> JSONResponse:
 
     accepted, reused = task_store.submit_many(tasks)
     queue_lengths = task_store.queue_lengths_by_model()
-    capacity = await reconcile_capacity(queue_lengths)
+    context_plans = task_store.context_plans_by_model()
+    capacity = await reconcile_capacity(queue_lengths, context_plans)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -123,6 +124,7 @@ async def submit_task_queue(request: Request) -> JSONResponse:
             "accepted_tasks": len(accepted),
             "reused_tasks": len(reused),
             "queue_lengths": queue_lengths,
+            "context_plans": context_plans,
             "tasks": [
                 *(task.to_summary() for task in accepted),
                 *(task.to_summary(reused=True) for task in reused),
@@ -313,14 +315,17 @@ def record_limiter_snapshot(limiter: Any) -> None:
     record_snapshot(snapshot.model, snapshot.active_requests, snapshot.queued_requests)
 
 
-async def reconcile_capacity(queue_lengths: dict[str, int]) -> dict[str, Any]:
+async def reconcile_capacity(
+    queue_lengths: dict[str, int],
+    context_plans: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     if backend_registry_client is None:
         return {
             "state": "skipped",
             "reason": "backend_registry_url_not_configured",
         }
     try:
-        result = await backend_registry_client.reconcile(queue_lengths)
+        result = await backend_registry_client.reconcile(queue_lengths, context_plans)
     except httpx.HTTPError as exc:
         ERRORS.labels(model="task_queue", error_type=type(exc).__name__).inc()
         logger.warning("task_queue_reconcile_failed error_type=%s", type(exc).__name__)
