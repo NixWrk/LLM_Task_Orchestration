@@ -12,12 +12,6 @@ SCHEMA_VERSION = "llmo.task.v1"
 ACTIVE_STATES = {"submitted", "queued", "allocating", "starting", "warming", "running"}
 CLAIMABLE_STATES = {"queued"}
 PRIORITIES = {"interactive", "foreground", "batch", "maintenance"}
-PRIORITY_ORDER = {
-    "interactive": 0,
-    "foreground": 1,
-    "batch": 2,
-    "maintenance": 3,
-}
 CONTEXT_BUCKETS = (2048, 4096, 8192, 16384, 32768, 65536, 131072)
 DEFAULT_MAX_OUTPUT_TOKENS = 1024
 TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
@@ -314,7 +308,6 @@ class InMemoryTaskStore:
             return None
         candidates.sort(
             key=lambda task: (
-                PRIORITY_ORDER.get(task.priority, 99),
                 task.created_at,
                 task.task_id,
             )
@@ -411,7 +404,17 @@ class JsonFileTaskStore(InMemoryTaskStore):
         tmp_path.replace(self.path)
 
 
-def build_task_store(path: str | Path | None = None) -> TaskStore:
+def build_task_store(
+    path: str | Path | None = None,
+    *,
+    backend: str | None = None,
+    dsn: str | None = None,
+) -> TaskStore:
+    selected_backend = (backend or "").strip().lower()
+    if selected_backend in {"postgres", "postgresql"} or dsn:
+        from queue_proxy.postgres_task_store import PostgresTaskStore
+
+        return PostgresTaskStore(str(dsn or path or ""))
     if path:
         return JsonFileTaskStore(path)
     return InMemoryTaskStore()

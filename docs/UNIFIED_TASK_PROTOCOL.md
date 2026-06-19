@@ -772,6 +772,11 @@ Current local durable mode uses `JsonFileTaskStore`, enabled by setting
 `TASK_STORE_PATH` for queue proxy. When unset, queue proxy uses the in-memory
 store for ephemeral development and tests.
 
+Production compose mode can use `PostgresTaskStore` by setting
+`TASK_STORE_BACKEND=postgres` and `TASK_STORE_DSN`. The store creates the initial
+task table and indexes on startup; formal migration tooling is still a next
+step.
+
 Minimum durable task fields:
 
 | Field | Notes |
@@ -819,13 +824,15 @@ Implemented now:
 16. Optional durable task executor enabled by `TASK_EXECUTOR_ENABLED`; it claims
    queued tasks with stored OpenAI-compatible payloads, routes through backend
    resolver, records results/errors, and releases backend leases.
+17. Postgres task-store backend selected by `TASK_STORE_BACKEND=postgres` and
+   `TASK_STORE_DSN`.
 
 Needed next:
 
 1. Schema validation for `llmo.task.v1`.
 2. Strict rejection for malformed v1 requests.
 3. Metrics/log labels from task metadata.
-4. Production Postgres task store.
+4. Formal Postgres migration tooling and real-container integration tests.
 5. Reload hysteresis and live LM Studio ownership reconciliation.
 6. Retry policy, equal-priority multi-tenant task claiming, and task execution
    metrics.

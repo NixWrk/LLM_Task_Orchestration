@@ -237,6 +237,53 @@ def test_task_store_cancel_is_tenant_scoped() -> None:
     assert store.queue_lengths_by_model() == {}
 
 
+def test_task_store_claim_treats_current_priorities_as_equal() -> None:
+    batch = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "batch",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:BATCH:source-html:ru",
+                    "idempotency_key": "zotero:item:BATCH:source-html:ru:v1",
+                }
+            ],
+        }
+    )
+    interactive = parse_task_queue_payload(
+        {
+            "model": "zotero-html-translate",
+            "orchestration": {
+                "schema_version": "llmo.task.v1",
+                "tenant": "elvis",
+                "project": "zotero",
+                "service": "zotero-html-translate-worker",
+                "task": "html_translate",
+                "priority": "interactive",
+            },
+            "tasks": [
+                {
+                    "job_id": "zotero:item:INTERACTIVE:source-html:ru",
+                    "idempotency_key": "zotero:item:INTERACTIVE:source-html:ru:v1",
+                }
+            ],
+        }
+    )
+    store = InMemoryTaskStore()
+
+    accepted_batch, _reused = store.submit_many(batch)
+    store.submit_many(interactive)
+
+    assert store.claim_next() == accepted_batch[0]
+
+
 def test_context_bucket_returns_next_bucket() -> None:
     assert context_bucket(4096) == 4096
     assert context_bucket(4097) == 8192

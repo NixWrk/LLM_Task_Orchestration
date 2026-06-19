@@ -100,8 +100,10 @@ Status:
    queue state and restart-safe idempotency.
 3. Done: in-memory store remains the default dev/test fallback.
 4. Done: interface supports fetch/list/cancel/claim/result/error operations.
-5. Next: add Postgres implementation and migrations for multi-worker
-   production execution.
+5. Done: `PostgresTaskStore` selected by `TASK_STORE_BACKEND=postgres` and
+   `TASK_STORE_DSN`, with startup schema creation.
+6. Next: add migration tooling and integration tests against a real Postgres
+   container for multi-worker production execution.
 
 ### Tasks
 

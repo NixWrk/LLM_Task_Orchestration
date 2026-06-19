@@ -57,7 +57,11 @@ backend_registry_client = (
 request_preparer = RequestPreparationService(policy_registry)
 backend_resolver = BackendResolver(settings, backend_registry_client, logger)
 forwarder = UpstreamForwarder(settings.request_timeout_seconds, settings.upstream_api_key)
-task_store = build_task_store(settings.task_store_path)
+task_store = build_task_store(
+    settings.task_store_path,
+    backend=settings.task_store_backend,
+    dsn=settings.task_store_dsn,
+)
 app = FastAPI(title="local-llm-orchestrator queue proxy", version="0.1.0")
 task_executor_task: asyncio.Task[None] | None = None
 

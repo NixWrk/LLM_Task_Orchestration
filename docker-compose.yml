@@ -65,6 +65,10 @@ services:
       REQUIRE_BACKEND_REGISTRY_BACKEND: ${REQUIRE_BACKEND_REGISTRY_BACKEND:-false}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-change-this-local-key}
       QUEUE_PROXY_API_KEY: ${QUEUE_PROXY_API_KEY:-}
+      TASK_STORE_BACKEND: ${TASK_STORE_BACKEND:-postgres}
+      TASK_STORE_DSN: ${TASK_STORE_DSN:-postgresql://litellm:litellm@postgres:5432/litellm}
+      TASK_EXECUTOR_ENABLED: ${TASK_EXECUTOR_ENABLED:-false}
+      TASK_EXECUTOR_INTERVAL_SECONDS: ${TASK_EXECUTOR_INTERVAL_SECONDS:-1}
       REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-120}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
@@ -74,8 +78,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - litellm
-      - lifecycle
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+      lifecycle:
+        condition: service_started
     networks:
       - gateway
 
